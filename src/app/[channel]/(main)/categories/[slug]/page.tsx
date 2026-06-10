@@ -1,11 +1,16 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { type ResolvingMetadata, type Metadata } from "next";
+import { type Metadata } from "next";
 import { cacheLife, cacheTag } from "next/cache";
 import { ProductListByCategoryDocument } from "@/gql/graphql";
 import { executePublicGraphQL } from "@/lib/graphql";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
+import { getTenantGraphQLHeaders, type TenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import { getTenantCommerceLayout } from "@/config/commerce-layout.server";
+import { categoryCacheTag, getTenantCacheKeyFromTenantGraphQLHeaders } from "@/lib/cache-tags";
 import { getPaginatedListVariables } from "@/lib/utils";
 import { parseEditorJSToText } from "@/lib/editorjs";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
 import { CategoryHero, transformToProductCard } from "@/ui/components/plp";
 import { buildSortVariables, buildFilterVariables } from "@/ui/components/plp/filter-utils";
 import { CategoryPageClient } from "./client";
@@ -14,14 +19,22 @@ import { CategoryPageClient } from "./client";
  * Cached category data for hero section and metadata.
  * Part of the static shell with Cache Components.
  */
-async function getCategoryData(slug: string, channel: string) {
+async function getCategoryData(
+	saleorApiUrl: string,
+	tenantGraphQLHeaders: TenantGraphQLHeaders,
+	tenantCacheKey: string,
+	slug: string,
+	channel: string,
+) {
 	"use cache";
 	cacheLife("minutes"); // 5 minute cache
-	cacheTag(`category:${slug}`); // Tag for on-demand revalidation
+	cacheTag(categoryCacheTag(tenantCacheKey, channel, slug)); // Tag for on-demand revalidation
 
 	const result = await executePublicGraphQL(ProductListByCategoryDocument, {
 		variables: { slug, channel, first: 1 },
 		revalidate: 300,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
 	});
 
 	if (!result.ok) {
@@ -44,18 +57,29 @@ type PageProps = {
 	}>;
 };
 
-export const generateMetadata = async (props: PageProps, parent: ResolvingMetadata): Promise<Metadata> => {
-	"use cache";
-	cacheLife("minutes");
-
+export const generateMetadata = async (props: PageProps): Promise<Metadata> => {
 	const params = await props.params;
-	const category = await getCategoryData(params.slug, params.channel);
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		return {};
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	const tenantCacheKey = getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders);
+	const category = await getCategoryData(
+		saleorApiUrl,
+		tenantGraphQLHeaders,
+		tenantCacheKey,
+		params.slug,
+		params.channel,
+	);
 	const plainDescription = parseEditorJSToText(category?.description);
 
-	return {
-		title: `${category?.name || "Category"} | ${category?.seoTitle || (await parent).title?.absolute}`,
-		description: category?.seoDescription || plainDescription || category?.seoTitle || category?.name,
-	};
+	return buildTenantRouteMetadata({
+		title: category?.seoTitle || category?.name || "Category",
+		description: category?.seoDescription || plainDescription || category?.name,
+		image: category?.backgroundImage?.url,
+		canonicalPath: `/${params.channel}/categories/${encodeURIComponent(params.slug)}`,
+	});
 };
 
 /**
@@ -64,7 +88,19 @@ export const generateMetadata = async (props: PageProps, parent: ResolvingMetada
  */
 export default async function Page(props: PageProps) {
 	const params = await props.params;
-	const category = await getCategoryData(params.slug, params.channel);
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		notFound();
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	const tenantCacheKey = getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders);
+	const category = await getCategoryData(
+		saleorApiUrl,
+		tenantGraphQLHeaders,
+		tenantCacheKey,
+		params.slug,
+		params.channel,
+	);
 
 	if (!category) {
 		notFound();
@@ -88,7 +124,12 @@ export default async function Page(props: PageProps) {
 			/>
 			{/* Dynamic content - streams in via Suspense */}
 			<Suspense fallback={<ProductsGridSkeleton />}>
-				<CategoryProducts params={props.params} searchParams={props.searchParams} />
+				<CategoryProducts
+					saleorApiUrl={saleorApiUrl}
+					tenantGraphQLHeaders={tenantGraphQLHeaders}
+					params={props.params}
+					searchParams={props.searchParams}
+				/>
 			</Suspense>
 		</>
 	);
@@ -98,16 +139,22 @@ export default async function Page(props: PageProps) {
  * Dynamic category products - reads searchParams at request time.
  */
 async function CategoryProducts({
+	saleorApiUrl,
+	tenantGraphQLHeaders,
 	params: paramsPromise,
 	searchParams: searchParamsPromise,
 }: {
+	saleorApiUrl: string;
+	tenantGraphQLHeaders: TenantGraphQLHeaders;
 	params: PageProps["params"];
 	searchParams: PageProps["searchParams"];
 }) {
 	const [params, searchParams] = await Promise.all([paramsPromise, searchParamsPromise]);
+	const commerceLayout = await getTenantCommerceLayout();
+	const plpSettings = commerceLayout.plp;
 
 	const paginationVariables = getPaginatedListVariables({ params: searchParams });
-	const sortBy = buildSortVariables(searchParams.sort);
+	const sortBy = buildSortVariables(searchParams.sort ?? plpSettings.defaultSort);
 	const filter = buildFilterVariables({ priceRange: searchParams.price });
 
 	const result = await executePublicGraphQL(ProductListByCategoryDocument, {
@@ -119,6 +166,8 @@ async function CategoryProducts({
 			filter,
 		},
 		revalidate: 300,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
 	});
 
 	const products = result.ok ? result.data.category?.products : null;
@@ -133,6 +182,10 @@ async function CategoryProducts({
 			products={productCards}
 			pageInfo={products.pageInfo}
 			totalCount={products.totalCount ?? productCards.length}
+			defaultSort={plpSettings.defaultSort}
+			showSortControl={plpSettings.flags.showSort}
+			showFilterControls={plpSettings.flags.showFilters}
+			cardDensity={plpSettings.cardDensity}
 		/>
 	);
 }

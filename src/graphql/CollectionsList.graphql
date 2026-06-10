@@ -1,0 +1,15 @@
+query CollectionsList($first: Int = 100, $after: String, $channel: String!) {
+	collections(first: $first, after: $after, channel: $channel) {
+		edges {
+			node {
+				id
+				slug
+				name
+			}
+		}
+		pageInfo {
+			hasNextPage
+			endCursor
+		}
+	}
+}

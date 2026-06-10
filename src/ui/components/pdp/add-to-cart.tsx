@@ -11,6 +11,10 @@ interface AddToCartProps {
 	discountPercent?: number | null;
 	disabled?: boolean;
 	disabledReason?: "no-selection" | "out-of-stock";
+	showTrustSignals?: boolean;
+	showShippingInfo?: boolean;
+	showReturnsSnippet?: boolean;
+	showContactCta?: boolean;
 }
 
 function AddToCartButton({
@@ -50,6 +54,10 @@ export function AddToCart({
 	discountPercent,
 	disabled = false,
 	disabledReason,
+	showTrustSignals = true,
+	showShippingInfo = true,
+	showReturnsSnippet = true,
+	showContactCta = true,
 }: AddToCartProps) {
 	return (
 		<div className="space-y-4">
@@ -70,21 +78,31 @@ export function AddToCart({
 			<AddToCartButton disabled={disabled} disabledReason={disabledReason} />
 
 			{/* Trust Signals */}
-			<div className="flex items-center justify-center gap-6 pt-2 text-xs text-muted-foreground">
-				<span className="flex items-center gap-1.5">
-					<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-						<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-					</svg>
-					Secure checkout
-				</span>
-				<span className="flex items-center gap-1.5">
-					<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-						<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-						<path d="M9 22V12h6v10" />
-					</svg>
-					Free delivery over €100
-				</span>
-			</div>
+			{showTrustSignals ? (
+				<div className="flex items-center justify-center gap-6 pt-2 text-xs text-muted-foreground">
+					<span className="flex items-center gap-1.5">
+						<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+							<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+						</svg>
+						Secure checkout
+					</span>
+					<span className="flex items-center gap-1.5">
+						<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+							<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+							<path d="M9 22V12h6v10" />
+						</svg>
+						Free delivery over €100
+					</span>
+				</div>
+			) : null}
+
+			{showShippingInfo || showReturnsSnippet || showContactCta ? (
+				<div className="space-y-1 pt-1 text-xs text-muted-foreground">
+					{showShippingInfo ? <p>Shipping: standard delivery in 3-5 business days.</p> : null}
+					{showReturnsSnippet ? <p>Returns: easy returns within 30 days.</p> : null}
+					{showContactCta ? <p>Need help? Contact support before placing your order.</p> : null}
+				</div>
+			) : null}
 		</div>
 	);
 }

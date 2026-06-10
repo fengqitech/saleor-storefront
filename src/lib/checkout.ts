@@ -1,6 +1,8 @@
 import { cookies } from "next/headers";
 import { CheckoutCreateDocument, CheckoutFindDocument } from "@/gql/graphql";
 import { executeAuthenticatedGraphQL } from "@/lib/graphql";
+import { getRequestOrigin } from "@/lib/request-origin.server";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
 
 export async function getIdFromCookies(channel: string) {
 	try {
@@ -14,8 +16,11 @@ export async function getIdFromCookies(channel: string) {
 }
 
 export async function saveIdToCookie(channel: string, checkoutId: string) {
+	const requestOrigin = await getRequestOrigin();
 	const shouldUseHttps =
-		process.env.NEXT_PUBLIC_STOREFRONT_URL?.startsWith("https") || !!process.env.NEXT_PUBLIC_VERCEL_URL;
+		requestOrigin?.startsWith("https") ||
+		process.env.NEXT_PUBLIC_STOREFRONT_URL?.startsWith("https") ||
+		!!process.env.NEXT_PUBLIC_VERCEL_URL;
 	const cookieName = `checkoutId-${channel}`;
 	(await cookies()).set(cookieName, checkoutId, {
 		sameSite: "lax",
@@ -33,9 +38,15 @@ export async function find(checkoutId: string) {
 		return null;
 	}
 
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		return null;
+	}
+
 	const result = await executeAuthenticatedGraphQL(CheckoutFindDocument, {
 		variables: { id: checkoutId },
 		cache: "no-cache",
+		saleorApiUrl,
 	});
 
 	// Return null on error or if checkout not found
@@ -57,5 +68,11 @@ export async function findOrCreate({ channel, checkoutId }: { checkoutId?: strin
 	return result.ok ? result.data.checkoutCreate?.checkout : null;
 }
 
-export const create = ({ channel }: { channel: string }) =>
-	executeAuthenticatedGraphQL(CheckoutCreateDocument, { cache: "no-cache", variables: { channel } });
+export const create = async ({ channel }: { channel: string }) => {
+	const saleorApiUrl = await getSaleorApiUrl();
+	return executeAuthenticatedGraphQL(CheckoutCreateDocument, {
+		cache: "no-cache",
+		variables: { channel },
+		...(saleorApiUrl ? { saleorApiUrl } : {}),
+	});
+};

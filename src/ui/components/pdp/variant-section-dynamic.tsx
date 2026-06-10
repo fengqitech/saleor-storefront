@@ -5,6 +5,7 @@ import { getDiscountInfo } from "@/lib/pricing";
 import { CheckoutAddLineDocument, type ProductDetailsQuery } from "@/gql/graphql";
 import { executeAuthenticatedGraphQL } from "@/lib/graphql";
 import * as Checkout from "@/lib/checkout";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
 
 import { AddToCart } from "./add-to-cart";
 import { VariantSelectionSection } from "./variant-selection";
@@ -17,6 +18,11 @@ interface VariantSectionDynamicProps {
 	product: Product;
 	channel: string;
 	searchParams: Promise<{ variant?: string }>;
+	showTrustBadges?: boolean;
+	showShippingInfo?: boolean;
+	showReturnsSnippet?: boolean;
+	showContactCta?: boolean;
+	showStickyAddToCart?: boolean;
 }
 
 /**
@@ -26,7 +32,16 @@ interface VariantSectionDynamicProps {
  * because it accesses searchParams (runtime data). The product data is
  * already cached in the static shell - this just adds the interactive parts.
  */
-export async function VariantSectionDynamic({ product, channel, searchParams }: VariantSectionDynamicProps) {
+export async function VariantSectionDynamic({
+	product,
+	channel,
+	searchParams,
+	showTrustBadges = true,
+	showShippingInfo = true,
+	showReturnsSnippet = true,
+	showContactCta = true,
+	showStickyAddToCart = false,
+}: VariantSectionDynamicProps) {
 	const { variant: variantParam } = await searchParams;
 	const variants = product.variants || [];
 
@@ -78,6 +93,11 @@ export async function VariantSectionDynamic({ product, channel, searchParams }: 
 		}
 
 		try {
+			const saleorApiUrl = await getSaleorApiUrl();
+			if (!saleorApiUrl) {
+				return;
+			}
+
 			const checkout = await Checkout.findOrCreate({
 				checkoutId: await Checkout.getIdFromCookies(channel),
 				channel: channel,
@@ -97,6 +117,7 @@ export async function VariantSectionDynamic({ product, channel, searchParams }: 
 					productVariantId: decodeURIComponent(selectedVariantID),
 				},
 				cache: "no-cache",
+				saleorApiUrl,
 			});
 
 			if (!addResult.ok) {
@@ -146,10 +167,18 @@ export async function VariantSectionDynamic({ product, channel, searchParams }: 
 					discountPercent={discountPercent}
 					disabled={isAddToCartDisabled}
 					disabledReason={disabledReason}
+					showTrustSignals={showTrustBadges}
+					showShippingInfo={showShippingInfo}
+					showReturnsSnippet={showReturnsSnippet}
+					showContactCta={showContactCta}
 				/>
 
 				{/* Sticky Add to Cart Bar (Mobile) */}
-				<StickyBar productName={product.name} price={price} show={!isAddToCartDisabled} />
+				<StickyBar
+					productName={product.name}
+					price={price}
+					show={showStickyAddToCart && !isAddToCartDisabled}
+				/>
 			</form>
 		</>
 	);

@@ -4,10 +4,11 @@
  * Server-side filters (handled by Saleor GraphQL):
  * - categories: via ProductFilterInput.categories (requires IDs)
  * - price: via ProductFilterInput.price range
+ * - colors/sizes: via ProductFilterInput.attributes (requires attribute slug + selected value names)
  *
- * Client-side filters (handled here):
- * - colors: Saleor doesn't support attribute filtering without IDs
- * - sizes: Same as colors
+ * Client-side filters (handled here as a safety net):
+ * - colors
+ * - sizes
  *
  * Note: Server-only functions (like resolveCategorySlugsToIds) are in filter-utils.server.ts
  */
@@ -52,6 +53,10 @@ export const STATIC_PRICE_RANGES_WITH_COUNT = STATIC_PRICE_RANGES.map((r) => ({ 
 export function buildFilterVariables(params: {
 	priceRange?: string | null;
 	categoryIds?: string[];
+	colorValues?: string[];
+	sizeValues?: string[];
+	colorAttributeSlug?: string;
+	sizeAttributeSlug?: string;
 }): ProductFilterInput | undefined {
 	const filter: ProductFilterInput = {};
 	let hasFilter = false;
@@ -66,6 +71,32 @@ export function buildFilterVariables(params: {
 		const min = parseFloat(minStr) || 0;
 		const max = maxStr ? parseFloat(maxStr) : undefined;
 		filter.price = { gte: min, ...(max && { lte: max }) };
+		hasFilter = true;
+	}
+
+	const attributes = [];
+	if (params.colorValues?.length && params.colorAttributeSlug) {
+		attributes.push({
+			slug: params.colorAttributeSlug,
+			value: {
+				name: {
+					oneOf: params.colorValues,
+				},
+			},
+		});
+	}
+	if (params.sizeValues?.length && params.sizeAttributeSlug) {
+		attributes.push({
+			slug: params.sizeAttributeSlug,
+			value: {
+				name: {
+					oneOf: params.sizeValues,
+				},
+			},
+		});
+	}
+	if (attributes.length > 0) {
+		filter.attributes = attributes;
 		hasFilter = true;
 	}
 

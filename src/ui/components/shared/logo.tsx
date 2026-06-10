@@ -18,6 +18,9 @@ interface LogoProps {
 	ariaLabel?: string;
 	/** Invert colors (for dark backgrounds like footer) */
 	inverted?: boolean;
+	/** Optional logo overrides (must be paths under `/public`) */
+	logoLightSrc?: string;
+	logoDarkSrc?: string;
 }
 
 /**
@@ -27,10 +30,20 @@ interface LogoProps {
  * Uses explicit width/height + aspect-ratio to prevent CLS while
  * allowing flexible sizing via className.
  */
-export const Logo = ({ className, ariaLabel = "Paper by Saleor", inverted = false }: LogoProps) => {
+export const Logo = ({
+	className,
+	ariaLabel = "Paper by Saleor",
+	inverted = false,
+	logoLightSrc,
+	logoDarkSrc,
+}: LogoProps) => {
 	// When inverted, swap the light/dark mode logic
-	const lightModeLogo = inverted ? "/logo-dark.svg" : "/logo.svg";
-	const darkModeLogo = inverted ? "/logo.svg" : "/logo-dark.svg";
+	const baseLight = "/logo.svg";
+	const baseDark = "/logo-dark.svg";
+	const resolvedLight = logoLightSrc || baseLight;
+	const resolvedDark = logoDarkSrc || baseDark;
+	const lightModeLogo = inverted ? resolvedDark : resolvedLight;
+	const darkModeLogo = inverted ? resolvedLight : resolvedDark;
 
 	// Base styles: preserve aspect ratio to prevent CLS
 	// Height classes (e.g., h-7) will work correctly with w-auto

@@ -1,10 +1,23 @@
 import { Suspense } from "react";
+import { type Metadata } from "next";
 import { cookies } from "next/headers";
 import { CurrentUserOrderListDocument } from "@/gql/graphql";
 import { executeAuthenticatedGraphQL } from "@/lib/graphql";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
 import { LoginForm } from "@/ui/components/login-form";
 import { OrderListItem } from "@/ui/components/order-list-item";
 import { Loader } from "@/ui/atoms/loader";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
+
+export async function generateMetadata(props: { params: Promise<{ channel: string }> }): Promise<Metadata> {
+	const { channel } = await props.params;
+	return buildTenantRouteMetadata({
+		title: "Orders",
+		description: "View your order history and details.",
+		canonicalPath: `/${channel}/orders`,
+		noIndex: true,
+	});
+}
 
 /**
  * Orders page with Cache Components.
@@ -35,8 +48,14 @@ async function OrdersContent() {
 		return <LoginForm />;
 	}
 
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		return <LoginForm />;
+	}
+
 	const result = await executeAuthenticatedGraphQL(CurrentUserOrderListDocument, {
 		cache: "no-cache",
+		saleorApiUrl,
 	});
 
 	if (!result.ok || !result.data.me) {

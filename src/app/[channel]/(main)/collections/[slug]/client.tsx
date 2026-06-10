@@ -13,6 +13,10 @@ interface CollectionPageClientProps {
 		endCursor?: string | null;
 	};
 	totalCount?: number;
+	defaultSort?: "featured" | "newest" | "price_asc" | "price_desc" | "bestselling";
+	showSortControl?: boolean;
+	showFilterControls?: boolean;
+	cardDensity?: "compact" | "standard" | "large";
 }
 
 function PaginationSkeleton() {
@@ -24,7 +28,14 @@ function PaginationSkeleton() {
 	);
 }
 
-export function CollectionPageClient({ products, pageInfo }: CollectionPageClientProps) {
+export function CollectionPageClient({
+	products,
+	pageInfo,
+	defaultSort = "featured",
+	showSortControl = true,
+	showFilterControls = true,
+	cardDensity = "standard",
+}: CollectionPageClientProps) {
 	const {
 		filteredProducts,
 		colorOptions,
@@ -41,7 +52,7 @@ export function CollectionPageClient({ products, pageInfo }: CollectionPageClien
 		handleSortChange,
 		handleRemoveFilter,
 		handleClearFilters,
-	} = useProductFilters({ products });
+	} = useProductFilters({ products, defaultSort });
 
 	return (
 		<>
@@ -49,6 +60,8 @@ export function CollectionPageClient({ products, pageInfo }: CollectionPageClien
 				resultCount={filteredProducts.length}
 				sortValue={sortValue}
 				onSortChange={handleSortChange}
+				showSortControl={showSortControl}
+				showFilterControls={showFilterControls}
 				colorOptions={colorOptions}
 				sizeOptions={sizeOptions}
 				priceRanges={priceRanges}
@@ -65,7 +78,7 @@ export function CollectionPageClient({ products, pageInfo }: CollectionPageClien
 			<div className="w-full">
 				<div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
 					{filteredProducts.length > 0 ? (
-						<ProductGrid products={filteredProducts} />
+						<ProductGrid products={filteredProducts} density={cardDensity} />
 					) : (
 						<div className="py-12 text-center">
 							<p className="text-lg text-muted-foreground">No products match your filters.</p>

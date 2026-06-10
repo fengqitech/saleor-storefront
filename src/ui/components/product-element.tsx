@@ -3,21 +3,41 @@ import { ProductImageWrapper } from "@/ui/atoms/product-image-wrapper";
 
 import type { ProductListItemFragment } from "@/gql/graphql";
 import { formatMoneyRange } from "@/lib/utils";
+import { getTenantFriendlyMediaSources } from "@/lib/tenant-media-url";
+
+function pickPrimaryProductImage(product: ProductListItemFragment): { url: string; alt: string } | null {
+	const mediaImages =
+		product.media
+			?.filter((m) => m.type === "IMAGE" && m.url)
+			.slice()
+			.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) ?? [];
+	const primary = mediaImages[0];
+	if (primary?.url) {
+		const sources = getTenantFriendlyMediaSources(primary, 512);
+		return { url: sources?.primary ?? primary.url, alt: primary.alt ?? product.name };
+	}
+	if (product.thumbnail?.url) {
+		const sources = getTenantFriendlyMediaSources({ url: product.thumbnail.url }, 512);
+		return { url: sources?.primary ?? product.thumbnail.url, alt: product.thumbnail.alt ?? product.name };
+	}
+	return null;
+}
 
 export function ProductElement({
 	product,
 	loading,
 	priority,
 }: { product: ProductListItemFragment } & { loading: "eager" | "lazy"; priority?: boolean }) {
+	const image = pickPrimaryProductImage(product);
 	return (
 		<li data-testid="ProductElement">
 			<LinkWithChannel href={`/products/${product.slug}`} key={product.id}>
 				<div>
-					{product?.thumbnail?.url && (
+					{image?.url && (
 						<ProductImageWrapper
 							loading={loading}
-							src={product.thumbnail.url}
-							alt={product.thumbnail.alt ?? ""}
+							src={image.url}
+							alt={image.alt}
 							width={512}
 							height={512}
 							sizes={"512px"}

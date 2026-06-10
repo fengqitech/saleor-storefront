@@ -4,6 +4,7 @@ import { useCallback, useMemo } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import type { SortOption, ActiveFilter } from "./filter-bar";
 import type { ProductCardData } from "./product-card";
+import { compareSizes } from "@/lib/sizes";
 import {
 	extractColorOptions,
 	extractSizeOptions,
@@ -19,8 +20,16 @@ interface UseProductFiltersOptions {
 	products: ProductCardData[];
 	/** Categories resolved from URL slugs (server-side) for active filter display */
 	resolvedCategories?: Array<{ slug: string; id: string; name: string }>;
+	/** Optional global categories list (not limited to current page) */
+	allCategories?: Array<{ slug: string; id: string; name: string }>;
+	/** Optional global colors list from storefront attribute catalog */
+	allColors?: Array<{ name: string; count: number }>;
+	/** Optional global sizes list from storefront attribute catalog */
+	allSizes?: Array<{ name: string; count: number }>;
 	/** Whether to include category filter (only for /products page) */
 	enableCategoryFilter?: boolean;
+	/** Default sort option when URL has no `sort` */
+	defaultSort?: SortOption;
 }
 
 interface UseProductFiltersResult {
@@ -57,13 +66,17 @@ interface UseProductFiltersResult {
  * Custom hook for product filtering and sorting logic.
  * Consolidates filter state management, URL synchronization, and filter application.
  *
- * Server-side filters: categories, price (via URL params -> GraphQL)
- * Client-side filters: colors, sizes (via JavaScript filtering)
+ * Server-side filters: categories, price, colors, sizes (via URL params -> GraphQL)
+ * Client-side filters: colors, sizes (safety net for consistency and instant UI feedback)
  */
 export function useProductFilters({
 	products,
 	resolvedCategories = [],
+	allCategories = [],
+	allColors = [],
+	allSizes = [],
 	enableCategoryFilter = false,
+	defaultSort = "featured",
 }: UseProductFiltersOptions): UseProductFiltersResult {
 	const router = useRouter();
 	const pathname = usePathname();
@@ -83,7 +96,7 @@ export function useProductFilters({
 		[searchParams],
 	);
 	const selectedPriceRange = searchParams.get("price") || null;
-	const sortValue = (searchParams.get("sort") as SortOption) || "featured";
+	const sortValue = (searchParams.get("sort") as SortOption) || defaultSort;
 
 	// Update URL with new filters (triggers server re-fetch for server-side filters)
 	const updateFilters = useCallback(
@@ -129,7 +142,7 @@ export function useProductFilters({
 			}
 
 			if (updates.sort !== undefined) {
-				if (updates.sort && updates.sort !== "featured") {
+				if (updates.sort && updates.sort !== defaultSort) {
 					params.set("sort", updates.sort);
 				} else {
 					params.delete("sort");
@@ -139,7 +152,7 @@ export function useProductFilters({
 			const queryString = params.toString();
 			router.push(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false });
 		},
-		[router, pathname, searchParams],
+		[router, pathname, searchParams, defaultSort],
 	);
 
 	// Filter handlers
@@ -188,7 +201,12 @@ export function useProductFilters({
 	);
 
 	// Extract filter options from products
-	const categoryOptions = useMemo(() => extractCategoryOptions(products), [products]);
+	const categoryOptions = useMemo(() => {
+		if (enableCategoryFilter && allCategories.length > 0) {
+			return allCategories.map((c) => ({ ...c, count: 0 }));
+		}
+		return extractCategoryOptions(products);
+	}, [products, enableCategoryFilter, allCategories]);
 
 	const handleRemoveFilter = useCallback(
 		(key: string, value: string) => {
@@ -218,11 +236,43 @@ export function useProductFilters({
 	}, [router, pathname]);
 
 	// Extract filter options with selected values included for deselection
-	const colorOptions = useMemo(
-		() => extractColorOptions(products, selectedColors),
-		[products, selectedColors],
-	);
-	const sizeOptions = useMemo(() => extractSizeOptions(products, selectedSizes), [products, selectedSizes]);
+	const colorOptions = useMemo(() => {
+		const local = extractColorOptions(products, selectedColors);
+		if (allColors.length === 0) {
+			return local;
+		}
+		const localMap = new Map(local.map((item) => [item.name, item]));
+		for (const color of allColors) {
+			const existing = localMap.get(color.name);
+			localMap.set(color.name, {
+				name: color.name,
+				count: color.count,
+				hex: existing?.hex,
+			});
+		}
+		for (const selectedColor of selectedColors) {
+			if (!localMap.has(selectedColor)) {
+				localMap.set(selectedColor, { name: selectedColor, count: 0 });
+			}
+		}
+		return Array.from(localMap.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+	}, [products, selectedColors, allColors]);
+	const sizeOptions = useMemo(() => {
+		const local = extractSizeOptions(products, selectedSizes);
+		if (allSizes.length === 0) {
+			return local;
+		}
+		const localMap = new Map(local.map((item) => [item.name, item]));
+		for (const size of allSizes) {
+			localMap.set(size.name, { name: size.name, count: size.count });
+		}
+		for (const selectedSize of selectedSizes) {
+			if (!localMap.has(selectedSize)) {
+				localMap.set(selectedSize, { name: selectedSize, count: 0 });
+			}
+		}
+		return Array.from(localMap.values()).sort((a, b) => compareSizes(a.name, b.name));
+	}, [products, selectedSizes, allSizes]);
 
 	// Apply client-side filters (colors, sizes only)
 	const clientFilteredProducts = useMemo(

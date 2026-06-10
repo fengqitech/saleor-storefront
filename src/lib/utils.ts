@@ -62,8 +62,12 @@ export const getPaginatedListVariables = ({
 }): PaginatedListVariables => {
 	const cursor = typeof params?.cursor === "string" ? params?.cursor : null;
 	const direction = params?.direction === "prev" ? "prev" : "next";
+	const rawPerPage = typeof params?.perPage === "string" ? params.perPage : null;
+	const parsedPerPage = rawPerPage ? Number.parseInt(rawPerPage, 10) : NaN;
+	const perPage =
+		Number.isFinite(parsedPerPage) && parsedPerPage > 0
+			? Math.min(Math.max(parsedPerPage, 1), 48)
+			: ProductsPerPage;
 
-	return direction === "prev"
-		? { last: ProductsPerPage, before: cursor }
-		: { first: ProductsPerPage, after: cursor };
+	return direction === "prev" ? { last: perPage, before: cursor } : { first: perPage, after: cursor };
 };

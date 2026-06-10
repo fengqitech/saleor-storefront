@@ -3,6 +3,7 @@ import { LinkWithChannel } from "../atoms/link-with-channel";
 import { formatDate, formatMoney, getHrefForVariant } from "@/lib/utils";
 import { type OrderDetailsFragment } from "@/gql/graphql";
 import { PaymentStatus } from "@/ui/components/payment-status";
+import { getTenantFriendlyMediaSources } from "@/lib/tenant-media-url";
 
 type Props = {
 	order: OrderDetailsFragment;
@@ -59,16 +60,29 @@ export const OrderListItem = ({ order }: Props) => {
 									}
 
 									const product = item.variant.product;
+									const mediaImages =
+										product.media
+											?.filter((m) => m.type === "IMAGE" && m.url)
+											.slice()
+											.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) ?? [];
+									const primary = mediaImages[0] ?? null;
+									const sources = primary?.url
+										? getTenantFriendlyMediaSources(primary, 256)
+										: product.thumbnail?.url
+											? getTenantFriendlyMediaSources({ url: product.thumbnail.url }, 256)
+											: null;
+									const imageSrc = sources?.primary ?? primary?.url ?? product.thumbnail?.url;
+									const imageAlt = primary?.alt ?? product.thumbnail?.alt ?? "";
 
 									return (
 										<tr key={product.id}>
 											<td className="py-6 pr-6 md:w-[60%] lg:w-[70%]">
 												<div className="flex flex-row items-center">
-													{product.thumbnail && (
+													{imageSrc && (
 														<div className="mr-3 aspect-square h-16 w-16 shrink-0 overflow-hidden rounded-md border bg-neutral-50 md:mr-6 md:h-24 md:w-24">
 															<Image
-																src={product.thumbnail.url}
-																alt={product.thumbnail.alt ?? ""}
+																src={imageSrc}
+																alt={imageAlt}
 																width={200}
 																height={200}
 																className="h-full w-full object-contain object-center"

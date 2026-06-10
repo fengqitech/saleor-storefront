@@ -20,6 +20,13 @@ query CheckoutFind($id: ID!) {
 						url
 						alt
 					}
+					media {
+						id
+						url(size: 256, format: WEBP)
+						alt
+						type
+						sortOrder
+					}
 					category {
 						name
 					}

@@ -1,43 +1,92 @@
 import { notFound } from "next/navigation";
 import { type Metadata } from "next";
+import { cacheLife, cacheTag } from "next/cache";
 import edjsHTML from "editorjs-html";
 import xss from "xss";
 import { PageGetBySlugDocument } from "@/gql/graphql";
 import { executePublicGraphQL } from "@/lib/graphql";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
+import { getTenantGraphQLHeaders, type TenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import { getTenantCacheKeyFromTenantGraphQLHeaders, pageCacheTag } from "@/lib/cache-tags";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
 
 const parser = edjsHTML();
 
-export const generateMetadata = async (props: { params: Promise<{ slug: string }> }): Promise<Metadata> => {
-	const params = await props.params;
+async function getPageBySlug(
+	saleorApiUrl: string,
+	channel: string,
+	slug: string,
+	tenantGraphQLHeaders: TenantGraphQLHeaders,
+	tenantKey: string,
+) {
+	"use cache";
+	cacheLife("hours");
+	cacheTag(pageCacheTag(tenantKey, channel, slug));
+
 	const result = await executePublicGraphQL(PageGetBySlugDocument, {
-		variables: { slug: params.slug },
-		revalidate: 60,
+		variables: { slug },
+		revalidate: 60 * 60,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
 	});
 
-	const page = result.ok ? result.data.page : null;
+	return result.ok ? result.data.page : null;
+}
 
-	return {
-		title: `${page?.seoTitle || page?.title || "Page"} · Saleor Storefront example`,
-		description: page?.seoDescription || page?.seoTitle || page?.title,
-	};
+export const generateMetadata = async (props: {
+	params: Promise<{ channel: string; slug: string }>;
+}): Promise<Metadata> => {
+	const params = await props.params;
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		return {};
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	const tenantKey = getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders);
+	const page = await getPageBySlug(
+		saleorApiUrl,
+		params.channel,
+		params.slug,
+		tenantGraphQLHeaders,
+		tenantKey,
+	);
+
+	return buildTenantRouteMetadata({
+		title: page?.seoTitle || page?.title || "Page",
+		description: page?.seoDescription || page?.title,
+		canonicalPath: `/${params.channel}/pages/${encodeURIComponent(params.slug)}`,
+	});
 };
 
-export default async function Page(props: { params: Promise<{ slug: string }> }) {
+export default async function Page(props: { params: Promise<{ channel: string; slug: string }> }) {
 	const params = await props.params;
-	const result = await executePublicGraphQL(PageGetBySlugDocument, {
-		variables: { slug: params.slug },
-		revalidate: 60,
-	});
-
-	if (!result.ok || !result.data.page) {
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		notFound();
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	const tenantKey = getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders);
+	const page = await getPageBySlug(
+		saleorApiUrl,
+		params.channel,
+		params.slug,
+		tenantGraphQLHeaders,
+		tenantKey,
+	);
+	if (!page) {
 		notFound();
 	}
 
-	const page = result.data.page;
-
 	const { title, content } = page;
 
-	const contentHtml = content ? parser.parse(JSON.parse(content)) : null;
+	let contentHtml: string[] | null = null;
+	if (content) {
+		try {
+			contentHtml = parser.parse(JSON.parse(content));
+		} catch {
+			contentHtml = null;
+		}
+	}
 
 	return (
 		<div className="mx-auto max-w-7xl p-8 pb-16">

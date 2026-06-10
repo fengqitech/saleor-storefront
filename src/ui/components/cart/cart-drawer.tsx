@@ -1,7 +1,6 @@
 "use client";
 
 import { useTransition } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { Minus, Plus, Trash2, ShoppingBag, ArrowRight, Truck, RotateCcw } from "lucide-react";
 import { Button } from "@/ui/components/ui/button";
@@ -12,6 +11,8 @@ import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { localeConfig } from "@/config/locale";
 import { hasDiscount } from "@/lib/pricing";
+import { getTenantFriendlyMediaSources } from "@/lib/tenant-media-url";
+import { ImageWithFallback } from "@/ui/components/shared/image-with-fallback";
 
 interface CartLine {
 	id: string;
@@ -33,6 +34,13 @@ interface CartLine {
 				url: string;
 				alt?: string | null;
 			} | null;
+			media?: Array<{
+				id: string;
+				url: string;
+				alt?: string | null;
+				type?: string | null;
+				sortOrder?: number | null;
+			}> | null;
 		};
 		pricing?: {
 			price?: {
@@ -97,6 +105,34 @@ function getVariantDetails(variant: CartLine["variant"]): VariantAttribute[] {
 		if (!a.isColor && b.isColor) return 1;
 		return 0;
 	});
+}
+
+function pickCartLineImage(
+	product: CartLine["variant"]["product"],
+): { src: string; fallback?: string; alt: string } | null {
+	const mediaImages =
+		product.media
+			?.filter((m) => m.type === "IMAGE" && m.url)
+			.slice()
+			.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) ?? [];
+	const primary = mediaImages[0] ?? null;
+	if (primary?.url) {
+		const sources = getTenantFriendlyMediaSources(primary, 256);
+		return {
+			src: sources?.primary ?? primary.url,
+			fallback: sources?.fallback,
+			alt: primary.alt ?? product.name,
+		};
+	}
+	if (product.thumbnail?.url) {
+		const sources = getTenantFriendlyMediaSources({ url: product.thumbnail.url }, 256);
+		return {
+			src: sources?.primary ?? product.thumbnail.url,
+			fallback: sources?.fallback,
+			alt: product.thumbnail.alt ?? product.name,
+		};
+	}
+	return null;
 }
 
 interface CartDrawerProps {
@@ -212,14 +248,19 @@ export function CartDrawer({ checkoutId, lines, totalPrice, channel }: CartDrawe
 												onClick={closeCart}
 												className="group relative h-24 w-20 shrink-0 overflow-hidden rounded-lg bg-secondary"
 											>
-												{line.variant.product.thumbnail?.url && (
-													<Image
-														src={line.variant.product.thumbnail.url}
-														alt={line.variant.product.thumbnail.alt ?? line.variant.product.name}
-														fill
-														className="object-cover transition-transform duration-300 group-hover:scale-105"
-													/>
-												)}
+												{(() => {
+													const img = pickCartLineImage(line.variant.product);
+													if (!img) return null;
+													return (
+														<ImageWithFallback
+															primarySrc={img.src}
+															fallbackSrc={img.fallback}
+															alt={img.alt}
+															fill
+															className="object-cover transition-transform duration-300 group-hover:scale-105"
+														/>
+													);
+												})()}
 											</Link>
 
 											{/* Product Details */}

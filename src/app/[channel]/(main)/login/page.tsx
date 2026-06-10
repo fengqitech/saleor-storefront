@@ -1,15 +1,23 @@
 import { Suspense } from "react";
+import { type Metadata } from "next";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Loader } from "@/ui/atoms/loader";
 import { LoginForm } from "@/ui/components/login-form";
 import { executeAuthenticatedGraphQL } from "@/lib/graphql";
 import { CurrentUserDocument } from "@/gql/graphql";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
 
-export const metadata = {
-	title: "Sign In",
-	description: "Sign in to your account to access your orders and saved addresses.",
-};
+export async function generateMetadata(props: { params: Promise<{ channel: string }> }): Promise<Metadata> {
+	const { channel } = await props.params;
+	return buildTenantRouteMetadata({
+		title: "Sign In",
+		description: "Sign in to your account to access your orders and saved addresses.",
+		canonicalPath: `/${channel}/login`,
+		noIndex: true,
+	});
+}
 
 /**
  * Login page with Cache Components.
@@ -40,8 +48,18 @@ async function LoginContent({ params: paramsPromise }: { params: Promise<{ chann
 
 	// Only check auth if we have cookies (runtime request with potential session)
 	if (hasCookies) {
+		const saleorApiUrl = await getSaleorApiUrl();
+		if (!saleorApiUrl) {
+			return (
+				<section className="mx-auto max-w-7xl p-8">
+					<LoginForm />
+				</section>
+			);
+		}
+
 		const result = await executeAuthenticatedGraphQL(CurrentUserDocument, {
 			cache: "no-cache",
+			saleorApiUrl,
 		});
 
 		// Redirect logged-in users to home

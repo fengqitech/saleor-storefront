@@ -15,7 +15,9 @@ export const rootMetadata: Metadata = {
 	// Title configuration
 	title: {
 		default: seoConfig.siteName,
-		template: seoConfig.titleTemplate,
+		// Multi-tenant: do not bake a single global siteName into SSR titles.
+		// `TenantHeadClient` replaces the suffix client-side per domain.
+		template: "%s",
 	},
 	description: seoConfig.description,
 

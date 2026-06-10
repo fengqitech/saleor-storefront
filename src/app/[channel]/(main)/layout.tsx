@@ -5,11 +5,56 @@ import { CartProvider, CartDrawerWrapper } from "@/ui/components/cart";
 import { AuthProvider } from "@/lib/auth";
 import { brandConfig } from "@/config/brand";
 import { Logo } from "@/ui/components/shared/logo";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
+import { getTenantBranding } from "@/config/tenant-branding.server";
+import { getTenantThemeCssVariables } from "@/config/tenant-branding";
+import { getTenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import { getTenantBaseUrl } from "@/lib/seo/url.server";
+import type { Metadata } from "next";
 
-export const metadata = {
-	title: brandConfig.siteName,
-	description: brandConfig.description,
-};
+export async function generateMetadata(): Promise<Metadata> {
+	const branding = await getTenantBranding();
+	const metadataBase = new URL(await getTenantBaseUrl());
+	const siteName = branding.siteName || brandConfig.siteName;
+	const seoTitleDefault = branding.seoDefaultTitle || siteName;
+	const defaultDescription = branding.seoDefaultDescription || brandConfig.tagline;
+	const icons =
+		branding.faviconSvgSrc || branding.faviconSrc || branding.appleTouchIconSrc
+			? {
+					icon: branding.faviconSvgSrc
+						? [{ url: branding.faviconSvgSrc, type: "image/svg+xml" }]
+						: branding.faviconSrc
+							? [branding.faviconSrc]
+							: undefined,
+					apple: branding.appleTouchIconSrc ? [branding.appleTouchIconSrc] : undefined,
+				}
+			: undefined;
+
+	return {
+		metadataBase,
+		title: {
+			default: seoTitleDefault,
+			template: `%s | ${seoTitleDefault}`,
+		},
+		description: defaultDescription,
+		openGraph: {
+			siteName,
+			title: seoTitleDefault,
+			description: defaultDescription,
+			images: [
+				{
+					url: branding.seoDefaultImage || "/opengraph-image.png",
+					width: 1200,
+					height: 630,
+					alt: branding.seoDefaultTitle || siteName,
+				},
+			],
+		},
+		applicationName: siteName,
+		themeColor: branding.themeColor,
+		icons,
+	};
+}
 
 function HeaderSkeleton() {
 	return (
@@ -75,30 +120,89 @@ function FooterSkeleton() {
 	);
 }
 
-export default async function RootLayout(props: {
-	children: ReactNode;
-	params: Promise<{ channel: string }>;
-}) {
-	const channel = (await props.params).channel;
+async function HeaderWithTenant({ channel }: { channel: string }) {
+	const saleorApiUrl = (await getSaleorApiUrl()) || process.env.NEXT_PUBLIC_SALEOR_API_URL;
+	if (!saleorApiUrl) {
+		return null;
+	}
+	const branding = await getTenantBranding();
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	return (
+		<Header
+			channel={channel}
+			saleorApiUrl={saleorApiUrl}
+			tenantGraphQLHeaders={tenantGraphQLHeaders}
+			branding={branding}
+		/>
+	);
+}
 
+async function FooterWithTenant({ channel }: { channel: string }) {
+	const saleorApiUrl = (await getSaleorApiUrl()) || process.env.NEXT_PUBLIC_SALEOR_API_URL;
+	if (!saleorApiUrl) {
+		return null;
+	}
+	const branding = await getTenantBranding();
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	return (
+		<Footer
+			channel={channel}
+			saleorApiUrl={saleorApiUrl}
+			tenantGraphQLHeaders={tenantGraphQLHeaders}
+			branding={branding}
+		/>
+	);
+}
+
+function LayoutFallback({ children }: { children: ReactNode }) {
 	return (
 		<AuthProvider>
 			<CartProvider>
-				<Suspense fallback={<HeaderSkeleton />}>
-					<Header channel={channel} />
-				</Suspense>
+				<HeaderSkeleton />
 				<div className="flex min-h-[calc(100dvh-64px)] flex-col">
 					<main className="flex-1">
-						<Suspense>{props.children}</Suspense>
+						<Suspense>{children}</Suspense>
 					</main>
-					<Suspense fallback={<FooterSkeleton />}>
-						<Footer channel={channel} />
-					</Suspense>
+					<FooterSkeleton />
 				</div>
-				<Suspense fallback={null}>
-					<CartDrawerWrapper channel={channel} />
-				</Suspense>
 			</CartProvider>
 		</AuthProvider>
+	);
+}
+
+async function TenantRootLayout(props: { children: ReactNode; params: Promise<{ channel: string }> }) {
+	const channel = (await props.params).channel;
+	const branding = await getTenantBranding();
+	const styleVars = getTenantThemeCssVariables(branding);
+
+	return (
+		<div style={styleVars}>
+			<AuthProvider>
+				<CartProvider>
+					<Suspense fallback={<HeaderSkeleton />}>
+						<HeaderWithTenant channel={channel} />
+					</Suspense>
+					<div className="flex min-h-[calc(100dvh-64px)] flex-col">
+						<main className="flex-1">
+							<Suspense>{props.children}</Suspense>
+						</main>
+						<Suspense fallback={<FooterSkeleton />}>
+							<FooterWithTenant channel={channel} />
+						</Suspense>
+					</div>
+					<Suspense fallback={null}>
+						<CartDrawerWrapper channel={channel} />
+					</Suspense>
+				</CartProvider>
+			</AuthProvider>
+		</div>
+	);
+}
+
+export default function RootLayout(props: { children: ReactNode; params: Promise<{ channel: string }> }) {
+	return (
+		<Suspense fallback={<LayoutFallback>{props.children}</LayoutFallback>}>
+			<TenantRootLayout {...props} />
+		</Suspense>
 	);
 }

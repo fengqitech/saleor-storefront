@@ -1,0 +1,18 @@
+query PagesList($first: Int = 100, $after: String, $channel: String!) {
+	pages(first: $first, after: $after, channel: $channel) {
+		edges {
+			node {
+				id
+				slug
+				title
+				created
+				publishedAt
+				isPublished
+			}
+		}
+		pageInfo {
+			hasNextPage
+			endCursor
+		}
+	}
+}

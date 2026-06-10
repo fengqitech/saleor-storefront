@@ -1,16 +1,15 @@
 import { Suspense } from "react";
 import { notFound, redirect } from "next/navigation";
+import { type Metadata } from "next";
 import Link from "next/link";
 import { searchProducts } from "@/lib/search";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
+import { getTenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
 import { SearchResults } from "@/ui/components/search-results";
 import { Pagination } from "@/ui/components/pagination";
 import { SearchSort } from "./search-sort";
 import { SearchIcon } from "lucide-react";
-
-export const metadata = {
-	title: "Search products · Saleor Storefront example",
-	description: "Search products in Saleor Storefront example",
-};
 
 type SearchParams = {
 	query?: string | string[];
@@ -18,6 +17,23 @@ type SearchParams = {
 	direction?: string | string[];
 	sort?: string | string[];
 };
+
+export async function generateMetadata(props: {
+	params: Promise<{ channel: string }>;
+	searchParams: Promise<SearchParams>;
+}): Promise<Metadata> {
+	const [{ channel }, searchParams] = await Promise.all([props.params, props.searchParams]);
+	const rawQuery = searchParams.query;
+	const query = Array.isArray(rawQuery) ? rawQuery.find((value) => value.length > 0) : rawQuery;
+	const title = query ? `Search: ${query}` : "Search";
+
+	return buildTenantRouteMetadata({
+		title,
+		description: "Search products",
+		canonicalPath: `/${channel}/search`,
+		noIndex: true,
+	});
+}
 
 /**
  * Search page with Cache Components.
@@ -75,10 +91,18 @@ async function SearchContent({
 		? (sortParam as "relevance" | "price-asc" | "price-desc" | "name" | "newest")
 		: "relevance";
 
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		notFound();
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+
 	// Search using Saleor
 	const result = await searchProducts({
 		query,
 		channel: params.channel,
+		saleorApiUrl,
+		tenantGraphQLHeaders,
 		limit: 20,
 		cursor,
 		direction,

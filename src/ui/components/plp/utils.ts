@@ -4,6 +4,29 @@ import { getColorHex, isColorAttribute, isSizeAttribute } from "@/lib/colors";
 import { sortSizes } from "@/lib/sizes";
 import { localeConfig } from "@/config/locale";
 import { hasDiscountInPriceRange } from "@/lib/pricing";
+import { getTenantFriendlyMediaSources } from "@/lib/tenant-media-url";
+
+function pickPrimaryProductImage(product: ProductListItemFragment): { url: string; alt: string } | null {
+	const mediaImages =
+		product.media
+			?.filter((m) => m.type === "IMAGE" && m.url)
+			.slice()
+			.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) ?? [];
+
+	const primary = mediaImages[0];
+	if (primary?.url) {
+		const sources = getTenantFriendlyMediaSources(primary, 1024);
+		const url = sources?.primary ?? primary.url;
+		return { url, alt: primary.alt ?? product.name };
+	}
+
+	if (product.thumbnail?.url) {
+		const sources = getTenantFriendlyMediaSources({ url: product.thumbnail.url }, 1024);
+		return { url: sources?.primary ?? product.thumbnail.url, alt: product.thumbnail.alt ?? product.name };
+	}
+
+	return null;
+}
 
 /**
  * Extract colors from product variants
@@ -68,6 +91,7 @@ export function transformToProductCard(product: ProductListItemFragment, channel
 	// Extract colors and sizes from variants
 	const colors = extractColorsFromVariants(product.variants);
 	const sizes = extractSizesFromVariants(product.variants);
+	const image = pickPrimaryProductImage(product);
 
 	return {
 		id: product.id,
@@ -77,8 +101,8 @@ export function transformToProductCard(product: ProductListItemFragment, channel
 		price: startPrice?.amount ?? 0,
 		compareAtPrice: isSale ? undiscountedStartPrice?.amount : null,
 		currency: startPrice?.currency ?? localeConfig.fallbackCurrency,
-		image: product.thumbnail?.url ?? "/placeholder.svg",
-		imageAlt: product.thumbnail?.alt ?? product.name,
+		image: image?.url ?? "/placeholder.svg",
+		imageAlt: image?.alt ?? product.name,
 		hoverImage: null, // Would need additional media in fragment
 		href: `/${channel}/products/${product.slug}`,
 		badge: isSale ? "Sale" : null,

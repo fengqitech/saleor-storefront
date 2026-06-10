@@ -15,7 +15,10 @@ import {
 import { withRetry } from "@/lib/fetch-retry";
 import { ACCESS_TOKEN_MAX_AGE, REFRESH_TOKEN_MAX_AGE, encodeCookieName } from "./constants";
 
-const saleorApiUrl = process.env.NEXT_PUBLIC_SALEOR_API_URL;
+const saleorApiUrl =
+	typeof window !== "undefined"
+		? `${window.location.origin}/graphql/`
+		: process.env.NEXT_PUBLIC_SALEOR_API_URL;
 invariant(saleorApiUrl, "Missing NEXT_PUBLIC_SALEOR_API_URL env variable");
 
 /**

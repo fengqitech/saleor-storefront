@@ -1,14 +1,23 @@
 import { Suspense } from "react";
 import Image from "next/image";
+import { type Metadata } from "next";
 import { CheckoutLink } from "./checkout-link";
 import { DeleteLineButton } from "./delete-line-button";
 import * as Checkout from "@/lib/checkout";
 import { formatMoney, getHrefForVariant } from "@/lib/utils";
 import { LinkWithChannel } from "@/ui/atoms/link-with-channel";
+import { getTenantFriendlyMediaSources } from "@/lib/tenant-media-url";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
 
-export const metadata = {
-	title: "Shopping Cart · Saleor Storefront example",
-};
+export async function generateMetadata(props: { params: Promise<{ channel: string }> }): Promise<Metadata> {
+	const { channel } = await props.params;
+	return buildTenantRouteMetadata({
+		title: "Cart",
+		description: "Review items in your shopping cart.",
+		canonicalPath: `/${channel}/cart`,
+		noIndex: true,
+	});
+}
 
 export default function Page(props: { params: Promise<{ channel: string }> }) {
 	return (
@@ -57,15 +66,33 @@ async function CartContent({ params: paramsPromise }: { params: Promise<{ channe
 				{checkout.lines.map((item) => (
 					<li key={item.id} className="flex py-4">
 						<div className="aspect-square h-24 w-24 shrink-0 overflow-hidden rounded-md border bg-neutral-50 sm:h-32 sm:w-32">
-							{item.variant?.product?.thumbnail?.url && (
-								<Image
-									src={item.variant.product.thumbnail.url}
-									alt={item.variant.product.thumbnail.alt ?? ""}
-									width={200}
-									height={200}
-									className="h-full w-full object-contain object-center"
-								/>
-							)}
+							{(() => {
+								const product = item.variant?.product;
+								if (!product) return null;
+								const mediaImages =
+									product.media
+										?.filter((m) => m.type === "IMAGE" && m.url)
+										.slice()
+										.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) ?? [];
+								const primary = mediaImages[0] ?? null;
+								const sources = primary?.url
+									? getTenantFriendlyMediaSources(primary, 256)
+									: product.thumbnail?.url
+										? getTenantFriendlyMediaSources({ url: product.thumbnail.url }, 256)
+										: null;
+								const src = sources?.primary ?? primary?.url ?? product.thumbnail?.url;
+								const alt = primary?.alt ?? product.thumbnail?.alt ?? "";
+								if (!src) return null;
+								return (
+									<Image
+										src={src}
+										alt={alt}
+										width={200}
+										height={200}
+										className="h-full w-full object-contain object-center"
+									/>
+								);
+							})()}
 						</div>
 						<div className="relative flex flex-1 flex-col justify-between p-4 py-2">
 							<div className="flex justify-between justify-items-start gap-4">

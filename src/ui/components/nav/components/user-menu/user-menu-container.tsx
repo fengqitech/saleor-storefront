@@ -5,7 +5,7 @@ import { CurrentUserDocument } from "@/gql/graphql";
 import { executeAuthenticatedGraphQL } from "@/lib/graphql";
 import { LinkWithChannel } from "@/ui/atoms/link-with-channel";
 
-export async function UserMenuContainer() {
+export async function UserMenuContainer({ saleorApiUrl }: { saleorApiUrl: string }) {
 	// During static generation, cookies() throws - skip user fetch entirely
 	let hasCookies = false;
 	try {
@@ -20,6 +20,7 @@ export async function UserMenuContainer() {
 	if (hasCookies) {
 		const result = await executeAuthenticatedGraphQL(CurrentUserDocument, {
 			cache: "no-cache",
+			saleorApiUrl,
 		});
 		// Auth failed or expired = treat as not logged in
 		user = result.ok ? result.data.me : null;

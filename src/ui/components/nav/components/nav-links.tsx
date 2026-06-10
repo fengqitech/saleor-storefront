@@ -3,15 +3,31 @@ import { cacheLife, cacheTag } from "next/cache";
 import { NavLink } from "./nav-link";
 import { executePublicGraphQL } from "@/lib/graphql";
 import { MenuGetBySlugDocument } from "@/gql/graphql";
+import { getTenantCacheKeyFromTenantGraphQLHeaders, menuCacheTag } from "@/lib/cache-tags";
+import type { TenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import { isExternalHref, sanitizeHref } from "@/lib/safe-href";
 
-export const NavLinks = async ({ channel }: { channel: string }) => {
+export const NavLinks = async ({
+	channel,
+	saleorApiUrl,
+	tenantGraphQLHeaders,
+}: {
+	channel: string;
+	saleorApiUrl: string;
+	tenantGraphQLHeaders?: TenantGraphQLHeaders;
+}) => {
 	"use cache";
 	cacheLife("hours"); // 1 hour cache - navigation rarely changes
-	cacheTag("navigation"); // Tag for on-demand revalidation
+	const tenantKey = tenantGraphQLHeaders
+		? getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders)
+		: "unknown";
+	cacheTag(menuCacheTag(tenantKey, channel, "navbar")); // Tag for on-demand revalidation
 
 	const result = await executePublicGraphQL(MenuGetBySlugDocument, {
 		variables: { slug: "navbar", channel },
 		revalidate: 60 * 60, // 1 hour
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
 	});
 
 	if (!result.ok) {
@@ -47,8 +63,16 @@ export const NavLinks = async ({ channel }: { channel: string }) => {
 					);
 				}
 				if (item.url) {
+					const href = sanitizeHref(item.url);
+					if (!href) return null;
+					const external = isExternalHref(href);
 					return (
-						<Link key={item.id} href={item.url}>
+						<Link
+							key={item.id}
+							href={href}
+							target={external ? "_blank" : undefined}
+							rel={external ? "noreferrer noopener" : undefined}
+						>
 							{item.name}
 						</Link>
 					);

@@ -2,6 +2,14 @@ import { revalidatePath, revalidateTag } from "next/cache";
 import { NextRequest } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
 import { DefaultChannelSlug } from "@/app/config";
+import {
+	categoryCacheTag,
+	collectionCacheTag,
+	getTenantCacheKeyFromRequestHeaders,
+	menuCacheTag,
+	pageCacheTag,
+	productCacheTag,
+} from "@/lib/cache-tags";
 
 /**
  * Webhook endpoint for cache invalidation.
@@ -12,12 +20,46 @@ import { DefaultChannelSlug } from "@/app/config";
  * 3. Select events: PRODUCT_UPDATED, CATEGORY_UPDATED, etc.
  * 4. Copy the secret key and set as SALEOR_WEBHOOK_SECRET env var
  *
+ * Multi-tenant note:
+ * - Cache tags are scoped by request host (tenant) and channel.
+ * - Create one webhook per tenant domain (recommended), e.g.:
+ *   - https://dev-store01.yifeng.io/api/revalidate
+ *   - https://dev-store02.yifeng.io/api/revalidate
+ *
  * Security:
  * - Verifies Saleor's HMAC signature (prevents abuse)
  * - Rate limited (10 requests per minute per IP)
  */
 
 const WEBHOOK_SECRET = process.env.SALEOR_WEBHOOK_SECRET;
+const REVALIDATE_OBSERVABILITY_PREFIX = "[Revalidate-Observability]";
+
+function logRevalidateObservability(params: {
+	endpoint: "POST" | "GET";
+	outcome: "ok" | "rate_limited" | "unauthorized" | "invalid_request" | "invalid_payload" | "internal_error";
+	status: number;
+	durationMs: number;
+	clientIP?: string;
+	eventType?: string;
+	channel?: string;
+	pathCount?: number;
+	tagCount?: number;
+	error?: string;
+}) {
+	const payload = {
+		endpoint: params.endpoint,
+		outcome: params.outcome,
+		status: params.status,
+		durationMs: params.durationMs,
+		...(params.clientIP ? { clientIP: params.clientIP } : {}),
+		...(params.eventType ? { eventType: params.eventType } : {}),
+		...(params.channel ? { channel: params.channel } : {}),
+		...(typeof params.pathCount === "number" ? { pathCount: params.pathCount } : {}),
+		...(typeof params.tagCount === "number" ? { tagCount: params.tagCount } : {}),
+		...(params.error ? { error: params.error } : {}),
+	};
+	console.log(`${REVALIDATE_OBSERVABILITY_PREFIX} ${JSON.stringify(payload)}`);
+}
 
 // ============================================================================
 // Rate Limiting (in-memory, suitable for single-instance deployments)
@@ -92,7 +134,7 @@ function verifyWebhookSignature(payload: string, signature: string | null): bool
  * Extract product/category info from Saleor webhook payload
  */
 function parseWebhookPayload(payload: unknown): {
-	type: "product" | "category" | "collection" | "order" | "unknown";
+	type: "product" | "category" | "collection" | "menu" | "page" | "order" | "unknown";
 	slug?: string;
 	channel?: string;
 	categorySlug?: string;
@@ -151,16 +193,42 @@ function parseWebhookPayload(payload: unknown): {
 		};
 	}
 
+	// Menu events
+	if (data.menu && typeof data.menu === "object") {
+		const menu = data.menu as Record<string, unknown>;
+		return {
+			type: "menu",
+			slug: menu.slug as string | undefined,
+		};
+	}
+
+	// Page events
+	if (data.page && typeof data.page === "object") {
+		const page = data.page as Record<string, unknown>;
+		return {
+			type: "page",
+			slug: page.slug as string | undefined,
+		};
+	}
+
 	return { type: "unknown" };
 }
 
 export async function POST(request: NextRequest) {
+	const startedAt = Date.now();
 	// Rate limit check
 	const clientIP = getClientIP(request);
 	const rateLimit = checkRateLimit(`post:${clientIP}`);
 
 	if (!rateLimit.allowed) {
 		console.warn(`[Revalidate] Rate limited: ${clientIP}`);
+		logRevalidateObservability({
+			endpoint: "POST",
+			outcome: "rate_limited",
+			status: 429,
+			durationMs: Date.now() - startedAt,
+			clientIP,
+		});
 		return Response.json(
 			{ error: "Too many requests", resetIn: Math.ceil(rateLimit.resetIn / 1000) },
 			{
@@ -177,13 +245,23 @@ export async function POST(request: NextRequest) {
 	const rawBody = await request.text();
 
 	// Verify Saleor webhook signature
-	const signature = request.headers.get("saleor-signature");
+	const signature =
+		request.headers.get("saleor-signature") ||
+		request.headers.get("x-saleor-signature") ||
+		request.headers.get("saleor-signature".toUpperCase());
 
 	if (!verifyWebhookSignature(rawBody, signature)) {
 		// Fallback to static secret for manual testing
 		const staticSecret = request.headers.get("x-revalidate-secret");
 		if (staticSecret !== process.env.REVALIDATE_SECRET || !process.env.REVALIDATE_SECRET) {
 			console.warn("[Revalidate] Invalid signature or secret");
+			logRevalidateObservability({
+				endpoint: "POST",
+				outcome: "unauthorized",
+				status: 401,
+				durationMs: Date.now() - startedAt,
+				clientIP,
+			});
 			return Response.json({ error: "Unauthorized" }, { status: 401 });
 		}
 	}
@@ -191,14 +269,20 @@ export async function POST(request: NextRequest) {
 	try {
 		const payload = JSON.parse(rawBody);
 
-		// Debug: Log raw payload to understand webhook structure
-		console.log("[Revalidate] Raw payload:", JSON.stringify(payload, null, 2));
-
 		const { type, slug, channel, categorySlug } = parseWebhookPayload(payload);
 
 		// Use channel from webhook payload, or fall back to configured default
 		const targetChannel = channel || DefaultChannelSlug;
 		if (!targetChannel) {
+			logRevalidateObservability({
+				endpoint: "POST",
+				outcome: "invalid_request",
+				status: 400,
+				durationMs: Date.now() - startedAt,
+				clientIP,
+				eventType: type,
+				error: "Missing channel",
+			});
 			return Response.json(
 				{ error: "Channel not specified in webhook and NEXT_PUBLIC_DEFAULT_CHANNEL not set" },
 				{ status: 400 },
@@ -206,14 +290,16 @@ export async function POST(request: NextRequest) {
 		}
 		const revalidatedPaths: string[] = [];
 		const revalidatedTags: string[] = [];
+		const tenantKey = getTenantCacheKeyFromRequestHeaders(request.headers);
 
 		switch (type) {
 			case "product":
 				if (slug) {
 					// Tag-based: Invalidates "use cache" function data
 					// Second arg must match the cacheLife() profile used in the cached function
-					revalidateTag(`product:${slug}`, "minutes");
-					revalidatedTags.push(`product:${slug}`);
+					const tag = productCacheTag(tenantKey, targetChannel, slug);
+					revalidateTag(tag, "minutes");
+					revalidatedTags.push(tag);
 
 					// Path-based: Invalidates ISR page cache
 					revalidatePath(`/${targetChannel}/products/${slug}`);
@@ -226,8 +312,9 @@ export async function POST(request: NextRequest) {
 				// Also invalidate the category page where this product appears
 				// This ensures PLP pages show updated pricing/badges after product changes
 				if (categorySlug) {
-					revalidateTag(`category:${categorySlug}`, "minutes");
-					revalidatedTags.push(`category:${categorySlug}`);
+					const tag = categoryCacheTag(tenantKey, targetChannel, categorySlug);
+					revalidateTag(tag, "minutes");
+					revalidatedTags.push(tag);
 
 					revalidatePath(`/${targetChannel}/categories/${categorySlug}`);
 					revalidatedPaths.push(`/${targetChannel}/categories/${categorySlug}`);
@@ -237,8 +324,9 @@ export async function POST(request: NextRequest) {
 			case "category":
 				if (slug) {
 					// Tag-based (uses cacheLife("minutes"))
-					revalidateTag(`category:${slug}`, "minutes");
-					revalidatedTags.push(`category:${slug}`);
+					const tag = categoryCacheTag(tenantKey, targetChannel, slug);
+					revalidateTag(tag, "minutes");
+					revalidatedTags.push(tag);
 
 					// Path-based
 					revalidatePath(`/${targetChannel}/categories/${slug}`);
@@ -249,12 +337,39 @@ export async function POST(request: NextRequest) {
 			case "collection":
 				if (slug) {
 					// Tag-based (uses cacheLife("minutes"))
-					revalidateTag(`collection:${slug}`, "minutes");
-					revalidatedTags.push(`collection:${slug}`);
+					const tag = collectionCacheTag(tenantKey, targetChannel, slug);
+					revalidateTag(tag, "minutes");
+					revalidatedTags.push(tag);
 
 					// Path-based
 					revalidatePath(`/${targetChannel}/collections/${slug}`);
 					revalidatedPaths.push(`/${targetChannel}/collections/${slug}`);
+				}
+				break;
+
+			case "menu":
+				if (slug) {
+					// Navigation uses cacheLife("hours")
+					const tag = menuCacheTag(tenantKey, targetChannel, slug);
+					revalidateTag(tag, "hours");
+					revalidatedTags.push(tag);
+				}
+				// Navigation appears site-wide; revalidate a couple of key pages.
+				revalidatePath(`/${targetChannel}`);
+				revalidatedPaths.push(`/${targetChannel}`);
+				revalidatePath(`/${targetChannel}/products`);
+				revalidatedPaths.push(`/${targetChannel}/products`);
+				break;
+
+			case "page":
+				if (slug) {
+					// Pages use cacheLife("hours")
+					const tag = pageCacheTag(tenantKey, targetChannel, slug);
+					revalidateTag(tag, "hours");
+					revalidatedTags.push(tag);
+
+					revalidatePath(`/${targetChannel}/pages/${slug}`);
+					revalidatedPaths.push(`/${targetChannel}/pages/${slug}`);
 				}
 				break;
 
@@ -274,9 +389,28 @@ export async function POST(request: NextRequest) {
 			paths: sanitizedPaths,
 			tags: sanitizedTags,
 		});
+		logRevalidateObservability({
+			endpoint: "POST",
+			outcome: "ok",
+			status: 200,
+			durationMs: Date.now() - startedAt,
+			clientIP,
+			eventType: type,
+			channel: targetChannel,
+			pathCount: sanitizedPaths.length,
+			tagCount: sanitizedTags.length,
+		});
 		return Response.json({ paths: revalidatedPaths, tags: revalidatedTags, success: true });
 	} catch (error) {
 		console.error("[Revalidate] Error:", error);
+		logRevalidateObservability({
+			endpoint: "POST",
+			outcome: "invalid_payload",
+			status: 400,
+			durationMs: Date.now() - startedAt,
+			clientIP,
+			error: error instanceof Error ? error.message : "Invalid payload",
+		});
 		return Response.json({ error: "Invalid payload" }, { status: 400 });
 	}
 }
@@ -288,18 +422,26 @@ export async function POST(request: NextRequest) {
  * GET /api/revalidate?secret=xxx&path=/default-channel/products/my-product
  *
  * @example Tag-based revalidation ("use cache" functions):
- * GET /api/revalidate?secret=xxx&tag=product:my-product
+ * GET /api/revalidate?secret=xxx&tag=tenant:dev-store01.yifeng.io:product:default-channel:my-product
  *
  * @example Both at once:
- * GET /api/revalidate?secret=xxx&path=/default-channel/products/my-product&tag=product:my-product
+ * GET /api/revalidate?secret=xxx&path=/default-channel/products/my-product&tag=tenant:dev-store01.yifeng.io:product:default-channel:my-product
  */
 export async function GET(request: NextRequest) {
+	const startedAt = Date.now();
 	// Rate limit check
 	const clientIP = getClientIP(request);
 	const rateLimit = checkRateLimit(`get:${clientIP}`);
 
 	if (!rateLimit.allowed) {
 		console.warn(`[Revalidate] Rate limited: ${clientIP}`);
+		logRevalidateObservability({
+			endpoint: "GET",
+			outcome: "rate_limited",
+			status: 429,
+			durationMs: Date.now() - startedAt,
+			clientIP,
+		});
 		return Response.json(
 			{ error: "Too many requests", resetIn: Math.ceil(rateLimit.resetIn / 1000) },
 			{
@@ -316,6 +458,13 @@ export async function GET(request: NextRequest) {
 	const secret = searchParams.get("secret");
 
 	if (!process.env.REVALIDATE_SECRET || secret !== process.env.REVALIDATE_SECRET) {
+		logRevalidateObservability({
+			endpoint: "GET",
+			outcome: "unauthorized",
+			status: 401,
+			durationMs: Date.now() - startedAt,
+			clientIP,
+		});
 		return Response.json({ error: "Unauthorized" }, { status: 401 });
 	}
 
@@ -323,6 +472,14 @@ export async function GET(request: NextRequest) {
 	const tag = searchParams.get("tag");
 
 	if (!path && !tag) {
+		logRevalidateObservability({
+			endpoint: "GET",
+			outcome: "invalid_request",
+			status: 400,
+			durationMs: Date.now() - startedAt,
+			clientIP,
+			error: "Missing path/tag",
+		});
 		return Response.json({ error: "Provide path and/or tag parameter" }, { status: 400 });
 	}
 
@@ -345,5 +502,14 @@ export async function GET(request: NextRequest) {
 	const sanitizedPaths = revalidatedPaths.map((s) => s.replace(/[\r\n]/g, ""));
 	const sanitizedTags = revalidatedTags.map((s) => s.replace(/[\r\n]/g, ""));
 	console.log("[Revalidate] Manual:", { paths: sanitizedPaths, tags: sanitizedTags });
+	logRevalidateObservability({
+		endpoint: "GET",
+		outcome: "ok",
+		status: 200,
+		durationMs: Date.now() - startedAt,
+		clientIP,
+		pathCount: sanitizedPaths.length,
+		tagCount: sanitizedTags.length,
+	});
 	return Response.json({ paths: revalidatedPaths, tags: revalidatedTags, success: true });
 }

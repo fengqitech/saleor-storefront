@@ -49,6 +49,10 @@ interface FilterBarProps {
 	resultCount: number;
 	sortValue: SortOption;
 	onSortChange: (value: SortOption) => void;
+	showSortControl?: boolean;
+	showFilterControls?: boolean;
+	perPage?: number;
+	onPerPageChange?: (value: number) => void;
 	activeFilters?: readonly ActiveFilter[];
 	onRemoveFilter?: (key: string, value: string) => void;
 	onClearFilters?: () => void;
@@ -73,6 +77,10 @@ export function FilterBar({
 	resultCount,
 	sortValue,
 	onSortChange,
+	showSortControl = true,
+	showFilterControls = true,
+	perPage,
+	onPerPageChange,
 	activeFilters = [],
 	onRemoveFilter,
 	onClearFilters,
@@ -92,7 +100,11 @@ export function FilterBar({
 	const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
 	const hasFilters =
-		categoryOptions.length > 0 || colorOptions.length > 0 || sizeOptions.length > 0 || priceRanges.length > 0;
+		showFilterControls &&
+		(categoryOptions.length > 0 ||
+			colorOptions.length > 0 ||
+			sizeOptions.length > 0 ||
+			priceRanges.length > 0);
 
 	const activeFilterCount =
 		selectedCategories.length + selectedColors.length + selectedSizes.length + (selectedPriceRange ? 1 : 0);
@@ -428,26 +440,49 @@ export function FilterBar({
 							{resultCount} {resultCount === 1 ? "product" : "products"}
 						</span>
 
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button variant="outline-solid" size="sm" className="bg-transparent">
-									Sort
-									<ChevronDown className="ml-1.5 h-4 w-4 opacity-50" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end" className="w-48">
-								<DropdownMenuRadioGroup
-									value={sortValue}
-									onValueChange={(v) => onSortChange(v as SortOption)}
-								>
-									<DropdownMenuRadioItem value="featured">Featured</DropdownMenuRadioItem>
-									<DropdownMenuRadioItem value="newest">Newest</DropdownMenuRadioItem>
-									<DropdownMenuRadioItem value="price_asc">Price: Low to High</DropdownMenuRadioItem>
-									<DropdownMenuRadioItem value="price_desc">Price: High to Low</DropdownMenuRadioItem>
-									<DropdownMenuRadioItem value="bestselling">Best Selling</DropdownMenuRadioItem>
-								</DropdownMenuRadioGroup>
-							</DropdownMenuContent>
-						</DropdownMenu>
+						{typeof perPage === "number" && onPerPageChange && (
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button variant="outline-solid" size="sm" className="bg-transparent">
+										Per page: {perPage}
+										<ChevronDown className="ml-1.5 h-4 w-4 opacity-50" />
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end" className="w-44">
+									<DropdownMenuRadioGroup
+										value={String(perPage)}
+										onValueChange={(v) => onPerPageChange(Number.parseInt(v, 10))}
+									>
+										<DropdownMenuRadioItem value="12">12</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="24">24</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="48">48</DropdownMenuRadioItem>
+									</DropdownMenuRadioGroup>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						)}
+
+						{showSortControl ? (
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button variant="outline-solid" size="sm" className="bg-transparent">
+										Sort
+										<ChevronDown className="ml-1.5 h-4 w-4 opacity-50" />
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end" className="w-48">
+									<DropdownMenuRadioGroup
+										value={sortValue}
+										onValueChange={(v) => onSortChange(v as SortOption)}
+									>
+										<DropdownMenuRadioItem value="featured">Featured</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="newest">Newest</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="price_asc">Price: Low to High</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="price_desc">Price: High to Low</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="bestselling">Best Selling</DropdownMenuRadioItem>
+									</DropdownMenuRadioGroup>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						) : null}
 					</div>
 				</div>
 

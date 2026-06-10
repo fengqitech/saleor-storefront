@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FilterBar, ProductGrid, useProductFilters, type ProductCardData } from "@/ui/components/plp";
 import { Pagination } from "@/ui/components/pagination";
 
@@ -15,6 +16,16 @@ interface ProductsPageClientProps {
 	totalCount?: number;
 	/** Categories resolved from URL slugs (server-side) for active filter display */
 	resolvedCategories?: Array<{ slug: string; id: string; name: string }>;
+	/** Full category list for filter options (not limited to current page) */
+	allCategories?: Array<{ slug: string; id: string; name: string }>;
+	/** Full color list with global counts from storefront attribute catalog */
+	allColors?: Array<{ name: string; count: number }>;
+	/** Full size list with global counts from storefront attribute catalog */
+	allSizes?: Array<{ name: string; count: number }>;
+	defaultSort?: "featured" | "newest" | "price_asc" | "price_desc" | "bestselling";
+	showSortControl?: boolean;
+	showFilterControls?: boolean;
+	cardDensity?: "compact" | "standard" | "large";
 }
 
 function PaginationSkeleton() {
@@ -26,7 +37,32 @@ function PaginationSkeleton() {
 	);
 }
 
-export function ProductsPageClient({ products, pageInfo, resolvedCategories = [] }: ProductsPageClientProps) {
+export function ProductsPageClient({
+	products,
+	pageInfo,
+	resolvedCategories = [],
+	allCategories = [],
+	allColors = [],
+	allSizes = [],
+	defaultSort = "newest",
+	showSortControl = true,
+	showFilterControls = true,
+	cardDensity = "standard",
+}: ProductsPageClientProps) {
+	const router = useRouter();
+	const pathname = usePathname();
+	const searchParams = useSearchParams();
+	const perPage = Number.parseInt(searchParams.get("perPage") || "12", 10) || 12;
+
+	const handlePerPageChange = (nextPerPage: number) => {
+		const params = new URLSearchParams(searchParams.toString());
+		params.set("perPage", String(nextPerPage));
+		// Reset pagination cursor when page size changes.
+		params.delete("cursor");
+		params.delete("direction");
+		router.push(`${pathname}?${params.toString()}`, { scroll: false });
+	};
+
 	const {
 		filteredProducts,
 		categoryOptions,
@@ -49,7 +85,11 @@ export function ProductsPageClient({ products, pageInfo, resolvedCategories = []
 	} = useProductFilters({
 		products,
 		resolvedCategories,
+		allCategories,
+		allColors,
+		allSizes,
 		enableCategoryFilter: true,
+		defaultSort,
 	});
 
 	return (
@@ -58,6 +98,10 @@ export function ProductsPageClient({ products, pageInfo, resolvedCategories = []
 				resultCount={filteredProducts.length}
 				sortValue={sortValue}
 				onSortChange={handleSortChange}
+				showSortControl={showSortControl}
+				showFilterControls={showFilterControls}
+				perPage={perPage}
+				onPerPageChange={handlePerPageChange}
 				categoryOptions={categoryOptions}
 				colorOptions={colorOptions}
 				sizeOptions={sizeOptions}
@@ -77,7 +121,7 @@ export function ProductsPageClient({ products, pageInfo, resolvedCategories = []
 			<div className="w-full">
 				<div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
 					{filteredProducts.length > 0 ? (
-						<ProductGrid products={filteredProducts} />
+						<ProductGrid products={filteredProducts} density={cardDensity} />
 					) : (
 						<div className="py-12 text-center">
 							<p className="text-lg text-muted-foreground">No products match your filters.</p>

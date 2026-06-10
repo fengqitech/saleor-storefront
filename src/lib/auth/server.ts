@@ -5,9 +5,6 @@ import { cookies } from "next/headers";
 import { invariant } from "ts-invariant";
 import { ACCESS_TOKEN_MAX_AGE, REFRESH_TOKEN_MAX_AGE, encodeCookieName } from "./constants";
 
-const saleorApiUrl = process.env.NEXT_PUBLIC_SALEOR_API_URL;
-invariant(saleorApiUrl, "Missing NEXT_PUBLIC_SALEOR_API_URL env variable");
-
 /**
  * Server-side cookie storage for auth tokens.
  * Uses the same key encoding as the client-side storage to share cookies.
@@ -47,7 +44,10 @@ const createServerCookieStorage = async () => {
 	};
 };
 
-export const getServerAuthClient = async () => {
+export const getServerAuthClient = async (saleorApiUrlOverride?: string) => {
+	const saleorApiUrl = saleorApiUrlOverride || process.env.NEXT_PUBLIC_SALEOR_API_URL;
+	invariant(saleorApiUrl, "Missing NEXT_PUBLIC_SALEOR_API_URL env variable");
+
 	const serverCookieStorage = await createServerCookieStorage();
 	return createSaleorAuthClient({
 		saleorApiUrl,

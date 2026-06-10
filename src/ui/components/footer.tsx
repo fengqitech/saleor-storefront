@@ -6,6 +6,10 @@ import { ChannelsListDocument, MenuGetBySlugDocument } from "@/gql/graphql";
 import { executePublicGraphQL } from "@/lib/graphql";
 import { CopyrightText } from "./copyright-text";
 import { Logo } from "./shared/logo";
+import type { TenantBranding } from "@/config/tenant-branding";
+import type { TenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import { channelsCacheTag, getTenantCacheKeyFromTenantGraphQLHeaders, menuCacheTag } from "@/lib/cache-tags";
+import { isExternalHref, sanitizeHref } from "@/lib/safe-href";
 
 // Default footer links when no CMS data is available
 const defaultFooterLinks = {
@@ -24,10 +28,13 @@ const defaultFooterLinks = {
 };
 
 /** Cached channels list - rarely changes */
-async function getChannels() {
+async function getChannels(saleorApiUrl: string, tenantGraphQLHeaders?: TenantGraphQLHeaders) {
 	"use cache";
 	cacheLife("days"); // Cache for 1 day
-	cacheTag("channels");
+	const tenantKey = tenantGraphQLHeaders
+		? getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders)
+		: "unknown";
+	cacheTag(channelsCacheTag(tenantKey));
 
 	if (!process.env.SALEOR_APP_TOKEN) {
 		return null;
@@ -35,29 +42,53 @@ async function getChannels() {
 
 	const result = await executePublicGraphQL(ChannelsListDocument, {
 		headers: {
+			...(tenantGraphQLHeaders || {}),
 			Authorization: `Bearer ${process.env.SALEOR_APP_TOKEN}`,
 		},
+		saleorApiUrl,
 	});
 
 	return result.ok ? result.data : null;
 }
 
 /** Cached footer menu */
-async function getFooterMenu(channel: string) {
+async function getFooterMenu(
+	saleorApiUrl: string,
+	channel: string,
+	tenantGraphQLHeaders?: TenantGraphQLHeaders,
+) {
 	"use cache";
 	cacheLife("hours"); // Cache for 1 hour
-	cacheTag("footer-menu");
+	const tenantKey = tenantGraphQLHeaders
+		? getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders)
+		: "unknown";
+	cacheTag(menuCacheTag(tenantKey, channel, "footer"));
 
 	const result = await executePublicGraphQL(MenuGetBySlugDocument, {
 		variables: { slug: "footer", channel },
 		revalidate: 60 * 60 * 24,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
 	});
 
 	return result.ok ? result.data : null;
 }
 
-export async function Footer({ channel }: { channel: string }) {
-	const [footerLinks, channels] = await Promise.all([getFooterMenu(channel), getChannels()]);
+export async function Footer({
+	channel,
+	saleorApiUrl,
+	tenantGraphQLHeaders,
+	branding,
+}: {
+	channel: string;
+	saleorApiUrl: string;
+	tenantGraphQLHeaders?: TenantGraphQLHeaders;
+	branding?: TenantBranding;
+}) {
+	const [footerLinks, channels] = await Promise.all([
+		getFooterMenu(saleorApiUrl, channel, tenantGraphQLHeaders),
+		getChannels(saleorApiUrl, tenantGraphQLHeaders),
+	]);
 
 	const menuItems = footerLinks?.menu?.items || [];
 
@@ -69,8 +100,17 @@ export async function Footer({ channel }: { channel: string }) {
 					{/* Brand */}
 					<div className="col-span-2 md:col-span-1">
 						<Link href={`/${channel}`} className="mb-4 inline-block">
-							<Logo className="h-7 w-auto" inverted />
+							<Logo
+								className="h-7 w-auto"
+								inverted
+								ariaLabel={branding?.siteName}
+								logoLightSrc={branding?.logoLightSrc}
+								logoDarkSrc={branding?.logoDarkSrc}
+							/>
 						</Link>
+						{branding?.siteName && (
+							<p className="text-sm font-semibold text-neutral-200">{branding.siteName}</p>
+						)}
 						<p className="mt-4 max-w-xs text-sm leading-relaxed text-neutral-400">
 							Minimal design, maximum impact. Thoughtfully crafted essentials for everyday comfort.
 						</p>
@@ -119,11 +159,16 @@ export async function Footer({ channel }: { channel: string }) {
 										);
 									}
 									if (child.url) {
+										const href = sanitizeHref(child.url);
+										if (!href) return null;
+										const external = isExternalHref(href);
 										return (
 											<li key={child.id}>
 												<Link
-													href={child.url}
+													href={href}
 													className="text-sm text-neutral-400 transition-colors hover:text-neutral-200"
+													target={external ? "_blank" : undefined}
+													rel={external ? "noreferrer noopener" : undefined}
 												>
 													{child.name}
 												</Link>

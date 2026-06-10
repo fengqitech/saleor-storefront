@@ -9,6 +9,8 @@
  * 2. Set individual features to undefined/null
  */
 
+import "server-only";
+
 import { brandConfig } from "@/config/brand";
 import { localeConfig } from "@/config/locale";
 
@@ -38,7 +40,7 @@ export const seoConfig = {
 	titleSeparator: " | ",
 
 	/** Pages to exclude from search engine indexing */
-	noIndexPaths: ["/checkout", "/cart", "/api/", "/login", "/orders"],
+	noIndexPaths: ["/checkout", "/cart", "/api/", "/login", "/orders", "/signup", "/search"],
 
 	/** Enable/disable JSON-LD structured data */
 	enableJsonLd: true,
@@ -55,6 +57,8 @@ export const seoConfig = {
  * Falls back to localhost for development
  */
 export function getBaseUrl(): string {
+	// Root metadata is computed without a request context, so do not rely on next/headers here.
+	// Multi-tenant canonical URLs should be handled by per-page generateMetadata if needed.
 	return process.env.NEXT_PUBLIC_STOREFRONT_URL || "http://localhost:3000";
 }
 

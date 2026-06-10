@@ -7,9 +7,25 @@ import edjsHTML from "editorjs-html";
 import xss from "xss";
 
 import { executePublicGraphQL } from "@/lib/graphql";
-import { ProductDetailsDocument, type ProductDetailsQuery } from "@/gql/graphql";
-import { buildPageMetadata, buildProductJsonLd } from "@/lib/seo";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
+import { getTenantGraphQLHeaders, type TenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import {
+	getTenantCacheKeyFromTenantGraphQLHeaders,
+	productCacheTag,
+	categoryCacheTag,
+} from "@/lib/cache-tags";
+import { getTenantCommerceLayout } from "@/config/commerce-layout.server";
+import {
+	ProductDetailsDocument,
+	ProductListByCategoryDocument,
+	type ProductDetailsQuery,
+	type ProductListByCategoryQuery,
+} from "@/gql/graphql";
+import { buildProductJsonLd } from "@/lib/seo";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
+import { getTenantFriendlyMediaSources } from "@/lib/tenant-media-url";
 import { Breadcrumbs } from "@/ui/components/breadcrumbs";
+import { ProductGrid, transformToProductCard } from "@/ui/components/plp";
 import {
 	ProductGallery,
 	ProductAttributes,
@@ -28,10 +44,16 @@ import {
  * With Cache Components, this data becomes part of the static shell,
  * making product pages load instantly while variant-specific UI streams in.
  */
-async function getProductData(slug: string, channel: string) {
+async function getProductData(
+	saleorApiUrl: string,
+	tenantGraphQLHeaders: TenantGraphQLHeaders,
+	tenantCacheKey: string,
+	slug: string,
+	channel: string,
+) {
 	"use cache";
 	cacheLife("minutes"); // 5 minute cache
-	cacheTag(`product:${slug}`); // Tag for on-demand revalidation
+	cacheTag(productCacheTag(tenantCacheKey, channel, slug)); // Tag for on-demand revalidation
 
 	const result = await executePublicGraphQL(ProductDetailsDocument, {
 		variables: {
@@ -39,6 +61,8 @@ async function getProductData(slug: string, channel: string) {
 			channel,
 		},
 		revalidate: 300,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
 	});
 
 	if (!result.ok) {
@@ -48,7 +72,59 @@ async function getProductData(slug: string, channel: string) {
 		return null;
 	}
 
-	return result.data.product;
+	const product = result.data.product;
+	if (!product) {
+		return null;
+	}
+
+	// Rewrite variant media URLs to tenant-domain paths so client-side variant
+	// interactions never leak object-storage URLs after hydration/refresh.
+	const variants = product.variants?.map((variant) => {
+		const media = variant.media?.map((item) => {
+			if (!item?.url) return item;
+			const sources = getTenantFriendlyMediaSources(item, 1024);
+			if (!sources) return item;
+			return { ...item, url: sources.primary };
+		});
+		return media ? { ...variant, media } : variant;
+	});
+
+	return variants ? { ...product, variants } : product;
+}
+
+async function getRelatedProductsData(
+	saleorApiUrl: string,
+	tenantGraphQLHeaders: TenantGraphQLHeaders,
+	tenantCacheKey: string,
+	categorySlug: string,
+	channel: string,
+	currentProductId: string,
+): Promise<RelatedCategoryProductNode[]> {
+	"use cache";
+	cacheLife("minutes");
+	cacheTag(categoryCacheTag(tenantCacheKey, channel, categorySlug));
+
+	const result = await executePublicGraphQL(ProductListByCategoryDocument, {
+		variables: {
+			slug: categorySlug,
+			channel,
+			first: 10,
+		},
+		revalidate: 300,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
+	});
+
+	if (!result.ok) {
+		return [];
+	}
+
+	const edges = result.data.category?.products?.edges ?? [];
+	const nodes = edges
+		.map((edge) => edge.node)
+		.filter((node) => node?.id && node.id !== currentProductId)
+		.slice(0, 4);
+	return nodes;
 }
 
 // ============================================================================
@@ -60,22 +136,39 @@ export async function generateMetadata(props: {
 }): Promise<Metadata> {
 	// Avoid searchParams here - it makes the page dynamic and can cause build issues
 	const params = await props.params;
-	const product = await getProductData(params.slug, params.channel);
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		return { title: "Product" };
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	const tenantCacheKey = getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders);
+	const product = await getProductData(
+		saleorApiUrl,
+		tenantGraphQLHeaders,
+		tenantCacheKey,
+		params.slug,
+		params.channel,
+	);
 
 	if (!product) {
 		return { title: "Product Not Found" };
 	}
 
 	const description = product.seoDescription || product.name;
-	const ogImage = product.media?.[0]?.url || product.thumbnail?.url;
+	const ogSources = product.media?.[0]
+		? getTenantFriendlyMediaSources(product.media[0], 1024)
+		: product.thumbnail?.url
+			? getTenantFriendlyMediaSources({ url: product.thumbnail.url }, 1024)
+			: null;
+	const ogImage = ogSources?.primary ?? product.media?.[0]?.url ?? product.thumbnail?.url;
 	const priceAmount = product.pricing?.priceRange?.start?.gross?.amount;
 	const priceCurrency = product.pricing?.priceRange?.start?.gross?.currency;
 
-	return buildPageMetadata({
+	return buildTenantRouteMetadata({
 		title: product.seoTitle || product.name,
 		description,
 		image: ogImage,
-		url: `/${params.channel}/products/${encodeURIComponent(params.slug)}`,
+		canonicalPath: `/${params.channel}/products/${encodeURIComponent(params.slug)}`,
 		openGraph:
 			priceAmount && priceCurrency
 				? {
@@ -129,12 +222,44 @@ export default async function ProductPage(props: {
 	searchParams: Promise<{ variant?: string }>;
 }) {
 	const [params, searchParams] = await Promise.all([props.params, props.searchParams]);
+	const commerceLayout = await getTenantCommerceLayout();
+	const pdpSettings = commerceLayout.pdp;
 
-	const product = await getProductData(params.slug, params.channel);
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		notFound();
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
+	const tenantCacheKey = getTenantCacheKeyFromTenantGraphQLHeaders(tenantGraphQLHeaders);
+	const product = await getProductData(
+		saleorApiUrl,
+		tenantGraphQLHeaders,
+		tenantCacheKey,
+		params.slug,
+		params.channel,
+	);
 
 	if (!product) {
 		notFound();
 	}
+
+	const relatedProductsRaw =
+		pdpSettings.slots.relatedProducts && product.category?.slug
+			? await getRelatedProductsData(
+					saleorApiUrl,
+					tenantGraphQLHeaders,
+					tenantCacheKey,
+					product.category.slug,
+					params.channel,
+					product.id,
+				)
+			: [];
+	const relatedProducts = relatedProductsRaw.map((related) =>
+		transformToProductCard(
+			related as unknown as Parameters<typeof transformToProductCard>[0],
+			params.channel,
+		),
+	);
 
 	// Find selected variant from URL params
 	const variants = product.variants || [];
@@ -208,7 +333,11 @@ export default async function ProductPage(props: {
 					</div>
 
 					{/* Right Column - Product Info */}
-					<div className="flex flex-col gap-3">
+					<div
+						className={`flex flex-col ${
+							pdpSettings.preset === "tabs" ? "gap-4" : pdpSettings.preset === "accordion" ? "gap-5" : "gap-3"
+						}`}
+					>
 						{/* Product Name - static shell for SEO/LCP, order:2 so Category appears above */}
 						<h1 className="order-2 text-balance text-3xl font-semibold tracking-tight lg:text-4xl">
 							{product.name}
@@ -221,6 +350,11 @@ export default async function ProductPage(props: {
 									product={product}
 									channel={params.channel}
 									searchParams={props.searchParams}
+									showTrustBadges={pdpSettings.slots.trustBadges}
+									showShippingInfo={pdpSettings.slots.shippingInfo}
+									showReturnsSnippet={pdpSettings.slots.returnsSnippet}
+									showContactCta={pdpSettings.slots.contactCta}
+									showStickyAddToCart={pdpSettings.flags.stickyAddToCart}
 								/>
 							</Suspense>
 						</ErrorBoundary>
@@ -231,8 +365,18 @@ export default async function ProductPage(props: {
 								descriptionHtml={descriptionHtml}
 								attributes={productAttributes}
 								careInstructions={careInstructions}
+								showShippingInfo={pdpSettings.slots.shippingInfo}
+								showReturnsSnippet={pdpSettings.slots.returnsSnippet}
+								showFaq={pdpSettings.slots.faq}
 							/>
 						</div>
+
+						{pdpSettings.slots.relatedProducts && relatedProducts.length > 0 ? (
+							<div className="order-5 mt-6 space-y-3">
+								<h2 className="text-lg font-semibold">You may also like</h2>
+								<ProductGrid products={relatedProducts} density="large" />
+							</div>
+						) : null}
 					</div>
 				</div>
 			</main>
@@ -294,6 +438,9 @@ function extractCareInstructions(product: NonNullable<ProductDetailsQuery["produ
 
 type Product = NonNullable<ProductDetailsQuery["product"]>;
 type Variant = NonNullable<Product["variants"]>[number];
+type RelatedCategoryProductNode = NonNullable<
+	NonNullable<NonNullable<ProductListByCategoryQuery["category"]>["products"]>["edges"][number]
+>["node"];
 
 /**
  * Get gallery images for a product, with variant-specific image support.
@@ -311,7 +458,10 @@ function getGalleryImages(
 	if (selectedVariant?.media && selectedVariant.media.length > 0) {
 		const variantImages = selectedVariant.media
 			.filter((m) => m.type === "IMAGE")
-			.map((m) => ({ url: m.url, alt: m.alt }));
+			.map((m) => {
+				const sources = getTenantFriendlyMediaSources(m, 1024);
+				return { url: sources?.primary ?? m.url, alt: m.alt };
+			});
 		if (variantImages.length > 0) {
 			return variantImages;
 		}
@@ -319,12 +469,18 @@ function getGalleryImages(
 
 	// Otherwise, use product-level images
 	if (product.media && product.media.length > 0) {
-		return product.media.filter((m) => m.type === "IMAGE").map((m) => ({ url: m.url, alt: m.alt }));
+		return product.media
+			.filter((m) => m.type === "IMAGE")
+			.map((m) => {
+				const sources = getTenantFriendlyMediaSources(m, 1024);
+				return { url: sources?.primary ?? m.url, alt: m.alt };
+			});
 	}
 
 	// Final fallback: thumbnail
 	if (product.thumbnail) {
-		return [{ url: product.thumbnail.url, alt: product.thumbnail.alt }];
+		const sources = getTenantFriendlyMediaSources({ url: product.thumbnail.url }, 1024);
+		return [{ url: sources?.primary ?? product.thumbnail.url, alt: product.thumbnail.alt }];
 	}
 
 	return [];

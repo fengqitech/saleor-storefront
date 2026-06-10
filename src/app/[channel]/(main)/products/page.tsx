@@ -1,17 +1,21 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { ProductListPaginatedDocument } from "@/gql/graphql";
+import { type Metadata } from "next";
+import { CategoriesListDocument, ProductListPaginatedDocument } from "@/gql/graphql";
 import { executePublicGraphQL } from "@/lib/graphql";
+import { getSaleorApiUrl } from "@/lib/saleor-api-url.server";
+import { getTenantGraphQLHeaders } from "@/lib/tenant-graphql-headers.server";
+import { getTenantCommerceLayout } from "@/config/commerce-layout.server";
 import { getPaginatedListVariables } from "@/lib/utils";
+import { buildTenantRouteMetadata } from "@/lib/seo/route-metadata.server";
 import { CategoryHero, transformToProductCard } from "@/ui/components/plp";
 import { buildSortVariables, buildFilterVariables } from "@/ui/components/plp/filter-utils";
-import { resolveCategorySlugsToIds } from "@/ui/components/plp/filter-utils.server";
+import {
+	resolveAttributeFilterCatalog,
+	resolveCategorySlugsToIds,
+	resolveGlobalAttributeFilterCounts,
+} from "@/ui/components/plp/filter-utils.server";
 import { ProductsPageClient } from "./products-client";
-
-export const metadata = {
-	title: "Products · Saleor Storefront example",
-	description: "All products in Saleor Storefront example",
-};
 
 type PageProps = {
 	params: Promise<{ channel: string }>;
@@ -25,6 +29,15 @@ type PageProps = {
 		categories?: string;
 	}>;
 };
+
+export async function generateMetadata(props: { params: Promise<{ channel: string }> }): Promise<Metadata> {
+	const { channel } = await props.params;
+	return buildTenantRouteMetadata({
+		title: "Products",
+		description: "Browse all products",
+		canonicalPath: `/${channel}/products`,
+	});
+}
 
 /**
  * Products page with Cache Components.
@@ -65,18 +78,45 @@ async function ProductsContent({
 	searchParams: PageProps["searchParams"];
 }) {
 	const [params, searchParams] = await Promise.all([paramsPromise, searchParamsPromise]);
+	const commerceLayout = await getTenantCommerceLayout();
+	const plpSettings = commerceLayout.plp;
 
 	const paginationVariables = getPaginatedListVariables({ params: searchParams });
-	const sortBy = buildSortVariables(searchParams.sort);
+	const sortBy = buildSortVariables(searchParams.sort ?? plpSettings.defaultSort);
+
+	const saleorApiUrl = await getSaleorApiUrl();
+	if (!saleorApiUrl) {
+		notFound();
+	}
+	const tenantGraphQLHeaders = await getTenantGraphQLHeaders();
 
 	// Parse category slugs from URL and resolve to IDs for server-side filtering
 	const categorySlugs = searchParams.categories?.split(",").filter(Boolean) || [];
-	const categoryMap = await resolveCategorySlugsToIds(categorySlugs);
+	const categoryMap = await resolveCategorySlugsToIds(saleorApiUrl, categorySlugs, tenantGraphQLHeaders);
 	const categoryIds = Array.from(categoryMap.values()).map((c) => c.id);
+	const selectedColors = searchParams.colors?.split(",").filter(Boolean) || [];
+	const selectedSizes = searchParams.sizes?.split(",").filter(Boolean) || [];
+	const attributeCatalog = await resolveAttributeFilterCatalog(
+		saleorApiUrl,
+		params.channel,
+		selectedColors,
+		selectedSizes,
+		tenantGraphQLHeaders,
+	);
+	const globalAttributeCounts = await resolveGlobalAttributeFilterCounts(
+		saleorApiUrl,
+		params.channel,
+		attributeCatalog,
+		tenantGraphQLHeaders,
+	);
 
 	const filter = buildFilterVariables({
 		priceRange: searchParams.price,
 		categoryIds,
+		colorValues: selectedColors,
+		sizeValues: selectedSizes,
+		colorAttributeSlug: attributeCatalog.colorSlug,
+		sizeAttributeSlug: attributeCatalog.sizeSlug,
 	});
 
 	const result = await executePublicGraphQL(ProductListPaginatedDocument, {
@@ -87,6 +127,8 @@ async function ProductsContent({
 			filter,
 		},
 		revalidate: 300,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
 	});
 
 	if (!result.ok || !result.data.products) {
@@ -104,12 +146,32 @@ async function ProductsContent({
 		})
 		.filter(Boolean) as { slug: string; id: string; name: string }[];
 
+	const categoriesListResult = await executePublicGraphQL(CategoriesListDocument, {
+		variables: { first: 200 },
+		revalidate: 3600,
+		headers: tenantGraphQLHeaders,
+		saleorApiUrl,
+	});
+	const allCategories = categoriesListResult.ok
+		? categoriesListResult.data.categories?.edges
+				.map((e) => e.node)
+				.filter((c) => c?.id && c.slug && c.name)
+				.map((c) => ({ id: c.id, slug: c.slug, name: c.name })) ?? []
+		: [];
+
 	return (
 		<ProductsPageClient
 			products={productCards}
 			pageInfo={products.pageInfo}
 			totalCount={products.totalCount ?? productCards.length}
 			resolvedCategories={resolvedCategories}
+			allCategories={allCategories}
+			allColors={globalAttributeCounts.allColors}
+			allSizes={globalAttributeCounts.allSizes}
+			defaultSort={plpSettings.defaultSort}
+			showSortControl={plpSettings.flags.showSort}
+			showFilterControls={plpSettings.flags.showFilters}
+			cardDensity={plpSettings.cardDensity}
 		/>
 	);
 }

@@ -23,6 +23,9 @@ interface ProductAttributesProps {
 	descriptionHtml?: string[] | null;
 	attributes?: Attribute[];
 	careInstructions?: string | null;
+	showShippingInfo?: boolean;
+	showReturnsSnippet?: boolean;
+	showFaq?: boolean;
 }
 
 // Map attribute names to icons
@@ -54,6 +57,9 @@ export function ProductAttributes({
 	descriptionHtml,
 	attributes = [],
 	careInstructions,
+	showShippingInfo = true,
+	showReturnsSnippet = true,
+	showFaq = true,
 }: ProductAttributesProps) {
 	// Filter out variant attributes that are shown elsewhere (Size, Color)
 	const displayAttributes = attributes.filter((attr) => !["Size", "Color"].includes(attr.name));
@@ -107,15 +113,45 @@ export function ProductAttributes({
 				</AccordionItemWithContext>
 			)}
 
-			<AccordionItemWithContext value="shipping" className="border-border">
-				<AccordionTrigger className="py-4 text-sm font-medium hover:no-underline">
-					Shipping & Returns
-				</AccordionTrigger>
-				<AccordionContent className="leading-relaxed text-muted-foreground">
-					<p className="mb-2">Free shipping on orders over €100. Standard delivery 3-5 business days.</p>
-					<p>Free returns within 30 days of purchase. Items must be unworn with tags attached.</p>
-				</AccordionContent>
-			</AccordionItemWithContext>
+			{showShippingInfo || showReturnsSnippet ? (
+				<AccordionItemWithContext value="shipping" className="border-border">
+					<AccordionTrigger className="py-4 text-sm font-medium hover:no-underline">
+						{showShippingInfo && showReturnsSnippet
+							? "Shipping & Returns"
+							: showShippingInfo
+								? "Shipping"
+								: "Returns"}
+					</AccordionTrigger>
+					<AccordionContent className="leading-relaxed text-muted-foreground">
+						{showShippingInfo ? (
+							<p className={showReturnsSnippet ? "mb-2" : undefined}>
+								Free shipping on orders over €100. Standard delivery 3-5 business days.
+							</p>
+						) : null}
+						{showReturnsSnippet ? (
+							<p>Free returns within 30 days of purchase. Items must be unworn with tags attached.</p>
+						) : null}
+					</AccordionContent>
+				</AccordionItemWithContext>
+			) : null}
+
+			{showFaq ? (
+				<AccordionItemWithContext value="faq" className="border-border">
+					<AccordionTrigger className="py-4 text-sm font-medium hover:no-underline">FAQ</AccordionTrigger>
+					<AccordionContent className="space-y-2 leading-relaxed text-muted-foreground">
+						<p>
+							<strong className="text-foreground">How can I track my order?</strong>
+							<br />
+							You will receive an order confirmation email with tracking details after shipment.
+						</p>
+						<p>
+							<strong className="text-foreground">Can I change or cancel my order?</strong>
+							<br />
+							Please contact support as soon as possible before the order is shipped.
+						</p>
+					</AccordionContent>
+				</AccordionItemWithContext>
+			) : null}
 		</Accordion>
 	);
 }

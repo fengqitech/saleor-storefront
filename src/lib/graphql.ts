@@ -190,6 +190,33 @@ function getRetryConfig() {
 	return { maxRetries: 3, delayMs: 1000, timeoutMs };
 }
 
+async function getServerTenantContextHeaders(): Promise<HeadersInit | undefined> {
+	// Only meaningful on the server with a request context.
+	if (typeof window !== "undefined") return undefined;
+
+	try {
+		const { headers } = await import("next/headers");
+		const h = await headers();
+
+		const tenantDomain = h.get("x-tenant-domain") || h.get("x-forwarded-host");
+		const tenantCode = h.get("x-tenant-code");
+		if (!tenantDomain && !tenantCode) return undefined;
+
+		const out: Record<string, string> = {};
+		if (tenantDomain) {
+			out["X-Tenant-Domain"] = tenantDomain;
+			// Some layers (e.g. nginx maps) accept X-Forwarded-Host as the tenant domain.
+			out["X-Forwarded-Host"] = tenantDomain;
+		}
+		if (tenantCode) {
+			out["X-Tenant-Code"] = tenantCode;
+		}
+		return out;
+	} catch {
+		return undefined;
+	}
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -207,17 +234,17 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
 
 type FetchResult = GraphQLSuccess<Response> | GraphQLFailure;
 
+function resolveSaleorApiUrl(saleorApiUrl?: string): string | undefined {
+	return saleorApiUrl || process.env.NEXT_PUBLIC_SALEOR_API_URL;
+}
+
 async function fetchWithRetry(
+	url: string,
 	input: RequestInit,
 	withAuth: boolean,
 	operationName: string,
 	variablesForLog?: string,
 ): Promise<FetchResult> {
-	const url = process.env.NEXT_PUBLIC_SALEOR_API_URL;
-	if (!url) {
-		return networkError("Missing NEXT_PUBLIC_SALEOR_API_URL env variable");
-	}
-
 	const { maxRetries, delayMs, timeoutMs } = getRetryConfig();
 
 	for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -227,7 +254,7 @@ async function fetchWithRetry(
 			if (withAuth) {
 				try {
 					const { getServerAuthClient } = await import("@/lib/auth/server");
-					response = await (await getServerAuthClient()).fetchWithAuth(url, input);
+					response = await (await getServerAuthClient(url)).fetchWithAuth(url, input);
 				} catch (authError) {
 					const isDynamicServerError =
 						authError instanceof Error &&
@@ -260,18 +287,19 @@ async function fetchWithRetry(
 			return success(response);
 		} catch (error) {
 			const isTimeout = error instanceof Error && error.name === "AbortError";
+			const errorMessage = error instanceof Error ? error.message : String(error);
 			if (attempt < maxRetries) {
 				const errorType = isTimeout ? `Timeout (>${timeoutMs}ms)` : "Network error";
 				console.warn(
 					`[GraphQL] ${operationName}${
 						variablesForLog ? ` ${variablesForLog}` : ""
-					}: ${errorType} - retrying (attempt ${attempt + 1}/${maxRetries})`,
+					}: ${errorType} (${url}) - ${errorMessage} - retrying (attempt ${attempt + 1}/${maxRetries})`,
 				);
 				await sleep(delayMs * Math.pow(2, attempt));
 				continue;
 			}
 			return networkError(
-				`${operationName}: ${isTimeout ? "Request timed out" : "Failed to connect to Saleor API"}`,
+				`${operationName}: ${isTimeout ? "Request timed out" : "Failed to connect to Saleor API"} (${url})`,
 				error,
 			);
 		}
@@ -288,6 +316,13 @@ type GraphQLOptions<Variables> = {
 	headers?: HeadersInit;
 	cache?: RequestCache;
 	revalidate?: number;
+	/**
+	 * Per-request Saleor API URL.
+	 *
+	 * IMPORTANT: Do not resolve this from `headers()` inside a `"use cache"` scope.
+	 * Instead, resolve it in a dynamic boundary and pass it down as an argument.
+	 */
+	saleorApiUrl?: string;
 } & (Variables extends Record<string, never> ? { variables?: never } : { variables: Variables });
 
 type GraphQLResponse<T> = { data: T } | { errors: readonly { message: string }[] };
@@ -299,7 +334,11 @@ async function executeGraphQL<Result, Variables>(
 	operation: TypedDocumentString<Result, Variables>,
 	options: GraphQLOptions<Variables> & { withAuth: boolean },
 ): Promise<GraphQLResult<Result>> {
-	const { variables, headers, cache, revalidate, withAuth } = options;
+	const { variables, headers, cache, revalidate, withAuth, saleorApiUrl } = options;
+	const url = resolveSaleorApiUrl(saleorApiUrl);
+	if (!url) {
+		return networkError("Missing NEXT_PUBLIC_SALEOR_API_URL env variable");
+	}
 
 	const operationName = operation.toString().match(/(?:query|mutation)\s+(\w+)/)?.[1] || "UnknownOperation";
 	const variablesForLog = variables ? formatVariablesForLog(variables) : undefined;
@@ -310,9 +349,19 @@ async function executeGraphQL<Result, Variables>(
 		);
 	}
 
+	const tenantHeaders = await getServerTenantContextHeaders();
+	const mergedHeaders = new Headers();
+	mergedHeaders.set("Content-Type", "application/json");
+	if (tenantHeaders) {
+		for (const [k, v] of new Headers(tenantHeaders).entries()) mergedHeaders.set(k, v);
+	}
+	if (headers) {
+		for (const [k, v] of new Headers(headers).entries()) mergedHeaders.set(k, v);
+	}
+
 	const input = {
 		method: "POST",
-		headers: { "Content-Type": "application/json", ...headers },
+		headers: mergedHeaders,
 		body: JSON.stringify({
 			query: operation.toString(),
 			...(variables && { variables }),
@@ -322,7 +371,7 @@ async function executeGraphQL<Result, Variables>(
 	};
 
 	const fetchResult = await requestQueue.enqueue(() =>
-		fetchWithRetry(input, withAuth, operationName, variablesForLog),
+		fetchWithRetry(url, input, withAuth, operationName, variablesForLog),
 	);
 
 	if (!fetchResult.ok) {
@@ -336,7 +385,14 @@ async function executeGraphQL<Result, Variables>(
 		return httpError(response.status, `HTTP ${response.status}: ${response.statusText}\n${body}`);
 	}
 
-	const body = (await response.json()) as GraphQLResponse<Result>;
+	let body: GraphQLResponse<Result>;
+	try {
+		// `response.json()` can throw if the upstream closes early or returns non-JSON (e.g. an HTML error page with 200).
+		body = (await response.json()) as GraphQLResponse<Result>;
+	} catch (error) {
+		const contentType = response.headers.get("content-type") || "unknown";
+		return networkError(`${operationName}: Invalid JSON response (content-type: ${contentType})`, error);
+	}
 
 	if ("errors" in body) {
 		return graphqlError(body.errors.map((e) => e.message));
@@ -388,6 +444,7 @@ interface RawGraphQLOptions {
 	query: string;
 	variables?: Record<string, unknown>;
 	headers?: HeadersInit;
+	saleorApiUrl?: string;
 }
 
 /**
@@ -411,7 +468,7 @@ interface RawGraphQLOptions {
  * }
  */
 export async function executeRawGraphQL<T = unknown>(options: RawGraphQLOptions): Promise<GraphQLResult<T>> {
-	const url = process.env.NEXT_PUBLIC_SALEOR_API_URL;
+	const url = resolveSaleorApiUrl(options.saleorApiUrl);
 	if (!url) {
 		return networkError("Missing NEXT_PUBLIC_SALEOR_API_URL env variable");
 	}
@@ -420,9 +477,19 @@ export async function executeRawGraphQL<T = unknown>(options: RawGraphQLOptions)
 	const operationName = query.match(/(?:query|mutation)\s+(\w+)/)?.[1] || "RawOperation";
 
 	try {
+		const tenantHeaders = await getServerTenantContextHeaders();
+		const mergedHeaders = new Headers();
+		mergedHeaders.set("Content-Type", "application/json");
+		if (tenantHeaders) {
+			for (const [k, v] of new Headers(tenantHeaders).entries()) mergedHeaders.set(k, v);
+		}
+		if (headers) {
+			for (const [k, v] of new Headers(headers).entries()) mergedHeaders.set(k, v);
+		}
+
 		const response = await fetch(url, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", ...headers },
+			headers: mergedHeaders,
 			body: JSON.stringify({ query, variables }),
 		});
 
